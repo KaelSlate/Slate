@@ -65,6 +65,9 @@ linux/flutter/ephemeral/
 /native/target/
 **/*.rs.bk
 
+# Shipped bundles (build artifacts, rebuilt via flutter build + deploy script)
+/Releases/
+
 # Local Environment Variables
 env.json
 .env
