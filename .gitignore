@@ -1,0 +1,86 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+# The .vscode folder contains launch.json with API keys injected via --dart-define.
+# MUST be gitignored to prevent key leaks.
+.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication / Obfuscation related
+app.*.symbols
+app.*.map.json
+
+# Android build artifacts
+/android/app/debug
+/android/app/profile
+/android/app/release
+/android/.gradle/
+/android/captures/
+/android/gradlew
+/android/gradlew.bat
+/android/local.properties
+/android/key.properties
+*.keystore
+
+# iOS/macOS build artifacts
+**/Pods/
+**/Podfile.lock
+**/DerivedData/
+
+# Desktop (Windows/Linux/macOS) generated files
+windows/flutter/ephemeral/
+macos/Flutter/ephemeral/
+linux/flutter/ephemeral/
+*slate_core.dll
+
+# Native / Rust
+/native/target/
+**/*.rs.bk
+
+# Local Environment Variables
+env.json
+.env
+
+# Local encrypted database + SQLCipher migration backups — user data, never commit.
+slate_data/
+*.pre-rawkey.bak
+
+# Scratch / analysis artifacts that accumulated in the repo root.
+analyze_*.txt
+analyze_*.bat
+analyze_genesis.txt
+out.txt
+recovered_*.txt
+native/build_*.txt
+dart_devtools_*.json
+# Loose scratch Dart snippets (not part of the app or the test suite).
+/test_create.dart
+/test_encoding.dart
