@@ -346,24 +346,8 @@ class _InboxDrawerState extends State<InboxDrawer>
               color: Colors.white.withOpacity(0.85),
             ),
           ),
-          const SizedBox(width: 8),
-          if (_cachedInboxItems.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                color: Colors.white.withOpacity(0.06),
-              ),
-              child: Text(
-                '${_cachedInboxItems.length}',
-                style: TextStyle(
-                  fontFamily: 'Inter',
-                  fontSize: 10,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.white.withOpacity(0.4),
-                ),
-              ),
-            ),
+          // No count badge: "Inbox 26" is a pile of guilt, not information —
+          // the list itself says everything (quiet-progress rule).
           const Spacer(),
           _CloseButton(onTap: widget.onClose),
         ],
@@ -590,17 +574,6 @@ class _InboxItemCardState extends State<_InboxItemCard>
     if (mounted) widget.onDelete();
   }
 
-  String _timeAgo(int ts) {
-    final diff = DateTime.now().difference(
-      DateTime.fromMillisecondsSinceEpoch(ts),
-    );
-    if (diff.inMinutes < 1) return 'now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
-    if (diff.inHours < 24) return '${diff.inHours}h';
-    if (diff.inDays < 7) return '${diff.inDays}d';
-    return '${(diff.inDays / 7).floor()}w';
-  }
-
   Color _priorityColor(int p) {
     if (p == 2) return AppTheme.priorityCritical;
     if (p == 1) return AppTheme.priorityHigh;
@@ -710,22 +683,16 @@ class _InboxItemCardState extends State<_InboxItemCard>
                                 letterSpacing: 0.05,
                               ),
                             ),
+                            // Age label removed: "2d" reads as "ignored for
+                            // two days" — guilt, not help. Sort order already
+                            // keeps the freshest thought on top.
+                            if (widget.task.tags.isNotEmpty) ...[
                             const SizedBox(height: 4),
                             Wrap(
                               spacing: 5,
                               runSpacing: 4,
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                Text(
-                                  _timeAgo(widget.task.createdAt),
-                                  style: TextStyle(
-                                    fontFamily: 'Inter',
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w400,
-                                    color: Colors.white.withOpacity(0.18),
-                                    letterSpacing: 0.3,
-                                  ),
-                                ),
                                 for (final tg in widget.task.tags)
                                   Container(
                                     padding: const EdgeInsets.symmetric(
@@ -751,6 +718,7 @@ class _InboxItemCardState extends State<_InboxItemCard>
                                   ),
                               ],
                             ),
+                            ],
                           ],
                         ),
                 ),

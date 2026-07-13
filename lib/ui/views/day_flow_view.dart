@@ -19,6 +19,7 @@ import '../overlays/task_peek_layer.dart';
 import '../widgets/hover_task_card.dart';
 import '../widgets/drag_source.dart';
 import '../widgets/desktop_scroll_wrapper.dart';
+import '../widgets/quiet_progress_ring.dart';
 import '../widgets/smart_day_input.dart';
 
 /// Phase 3.0 — Unified Day View (Dual-Pane: Planning + 24-Hour Ribbon)
@@ -630,8 +631,8 @@ class _DayFlowViewState extends State<DayFlowView>
                     ),
                   ),
                   const SizedBox(width: 20),
-                  // Segmented progress dots — own RB in a fixed-width slot, so a
-                  // different dot count on another day can't relayout the Row.
+                  // Quiet progress ring — own RB in a fixed-width slot, so a
+                  // day flip can't relayout the Row. "n of m" only on hover.
                   SizedBox(
                     width: 110,
                     child: Align(
@@ -648,8 +649,12 @@ class _DayFlowViewState extends State<DayFlowView>
                               final completed =
                                   dayTasks.where((t) => t.isCompleted).length;
                               final total = dayTasks.length;
-                              return _TaskProgressDots(
-                                  completed: completed, total: total);
+                              return QuietProgressRing(
+                                  completed: completed,
+                                  total: total,
+                                  size: 16,
+                                  revealLabel: true,
+                                  labelOnLeft: true);
                             },
                           ),
                         ),
@@ -3104,69 +3109,6 @@ class _HoverIconButtonState extends State<_HoverIconButton> {
 // ═══════════════════════════════════════════════════════════════════════════
 // SEGMENTED PROGRESS DOTS — replaces LinearProgressIndicator
 // ═══════════════════════════════════════════════════════════════════════════
-
-class _TaskProgressDots extends StatelessWidget {
-  final int completed;
-  final int total;
-  const _TaskProgressDots({required this.completed, required this.total});
-
-  @override
-  Widget build(BuildContext context) {
-    if (total == 0) return const SizedBox.shrink();
-    const maxDots = 12;
-    final shown = math.min(total, maxDots);
-    final extra = total > maxDots ? total - maxDots : 0;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ...List.generate(shown, (i) {
-              final isDone = i < completed;
-              // Flat solid dots — NO glow. The green boxShadow glow re-rasterised
-              // (a blurred shadow) on every strike / day-change and read as the
-              // header's "tone flicker / shitty glowing". Clean Apple-green dot vs a
-              // faint track is calmer and never shimmers.
-              return Container(
-                margin: const EdgeInsets.only(right: 3),
-                width: 5,
-                height: 5,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(2.5),
-                  color: isDone
-                      ? const Color(0xFF30D158) // Premium solid Apple Green
-                      : Colors.white.withOpacity(0.12), // Subtle empty track
-                ),
-              );
-            }),
-            if (extra > 0)
-              Text(
-                '+$extra',
-                style: AppFonts.inter(
-                  fontSize: 8,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white.withOpacity(0.35),
-                ),
-              ),
-          ],
-        ),
-        const SizedBox(height: 5),
-        Text(
-          '$completed / $total',
-          style: AppFonts.inter(
-            fontSize: 8.5,
-            fontWeight: FontWeight.w600,
-            color: Colors.white.withOpacity(0.28),
-            letterSpacing: 0.4,
-          ),
-        ),
-      ],
-    );
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WARMUP SAMPLE — paints the real _TaskBlock recipe once (gradient fill,

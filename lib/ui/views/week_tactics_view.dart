@@ -11,6 +11,7 @@ import '../widgets/hover_task_card.dart';
 import '../widgets/drag_source.dart';
 import '../widgets/day_cell_drop_target.dart';
 import '../widgets/desktop_scroll_wrapper.dart';
+import '../widgets/quiet_progress_ring.dart';
 
 /// Slate — Week Tactics View (Phase 12 — Performance Polish)
 /// Magnetic snap scroll. Film grain. Edge highlights.
@@ -373,22 +374,11 @@ class WeekTacticsViewState extends State<WeekTacticsView> {
                   Text(_dateRangeFor(offset), style: AppTheme.bodyMedium.copyWith(
                       color: Colors.grey[500], fontSize: 12)),
                   const SizedBox(width: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(4),
-                      color: weekDone == weekCount && weekCount > 0
-                          ? Colors.green.withOpacity(0.06)
-                          : Colors.white.withOpacity(0.02),
-                    ),
-                    child: Text('$weekDone/$weekCount',
-                        style: TextStyle(
-                          fontFamily: 'Inter', fontSize: 11, fontWeight: FontWeight.w500,
-                          color: weekDone == weekCount && weekCount > 0
-                              ? Colors.green.withOpacity(0.5)
-                              : Colors.grey[600],
-                        )),
-                  ),
+                  // Quiet progress: the ring fills with what's done — no
+                  // "4/13" reproach. Exact count appears only on hover.
+                  QuietProgressRing(
+                      completed: weekDone, total: weekCount,
+                      size: 14, revealLabel: true),
                   const Spacer(),
                   Visibility(
                     visible: offset != 0,
@@ -667,26 +657,11 @@ class _DayColumnState extends State<_DayColumn> {
                             ),
                           ),
                           if (taskCount > 0) ...[
-                            const SizedBox(height: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(4),
-                                color: completedCount == taskCount
-                                    ? Colors.green.withOpacity(0.08)
-                                    : Colors.white.withOpacity(0.03),
-                              ),
-                              child: Text(
-                                '$completedCount/$taskCount',
-                                style: TextStyle(
-                                  fontFamily: 'Inter', fontSize: 9, fontWeight: FontWeight.w500,
-                                  color: completedCount == taskCount
-                                      ? Colors.green.withOpacity(0.6)
-                                      : Colors.white.withOpacity(0.35),
-                                  letterSpacing: 0.3,
-                                ),
-                              ),
-                            ),
+                            const SizedBox(height: 7),
+                            QuietProgressRing(
+                                completed: completedCount,
+                                total: taskCount,
+                                size: 10),
                           ],
                         ],
                       ),
