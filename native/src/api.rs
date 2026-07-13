@@ -323,6 +323,36 @@ fn async_enqueue_sync(op: SyncOp, task_id: &str, task: &RustTask) {
 // ENGINE INITIALIZATION (Phase 3)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Belt over the zero-panic law: with `panic = "abort"` the hook still runs
+/// before the process dies, so the trace lands next to the Dart crash log
+/// (slate_data/logs/rust_panic.txt). The panic still kills Flutter — this
+/// only preserves the evidence. Capped by truncate-on-oversize.
+fn install_panic_hook(db_path: &str) {
+    let logs_dir = std::path::Path::new(db_path)
+        .parent()
+        .map(|p| p.join("logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("logs"));
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let _ = std::fs::create_dir_all(&logs_dir);
+        let path = logs_dir.join("rust_panic.txt");
+        let oversize = std::fs::metadata(&path)
+            .map(|m| m.len() > 256 * 1024)
+            .unwrap_or(false);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(!oversize)
+            .write(true)
+            .truncate(oversize)
+            .open(&path);
+        if let Ok(mut f) = file {
+            let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
+            let _ = writeln!(f, "──── {} · slate_core v{}", ts, env!("CARGO_PKG_VERSION"));
+            let _ = writeln!(f, "{}\n", info);
+        }
+    }));
+}
+
 /// Initialize the offline engine.
 /// 1. Opens/creates SQLite database at db_path
 /// 2. Loads all tasks from SQLite into in-memory TaskStore
@@ -331,6 +361,8 @@ fn async_enqueue_sync(op: SyncOp, task_id: &str, task: &RustTask) {
 /// Returns the number of tasks loaded from local DB.
 #[flutter_rust_bridge::frb(sync)]
 pub fn init_engine(db_path: String, supabase_url: String, supabase_key: String, db_key: String) -> i32 {
+    install_panic_hook(&db_path);
+
     // Open local DB with encryption key
     let db = match LocalDb::open(&db_path, &db_key) {
         Ok(db) => Arc::new(db),

@@ -1,13 +1,17 @@
+import 'dart:async';
+import 'dart:io' show Directory;
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, FontLoader;
 import 'package:flutter_acrylic/flutter_acrylic.dart' show Window;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'core/engine/quick_capture_controller.dart';
 import 'core/engine/spatial_zoom_engine.dart';
 import 'core/engine/tray_shell.dart';
+import 'core/state/crash_log.dart';
 import 'core/state/first_run.dart';
 import 'core/state/local_prefs.dart';
 import 'core/state/task_state.dart';
@@ -43,11 +47,31 @@ Future<void> _warmFonts() async {
   }));
 }
 
-void main(List<String> args) async {
+void main(List<String> args) {
+  // Crash observability for testers: every uncaught error (zone + framework)
+  // lands in Documents/slate_data/logs with the app version. runApp must live
+  // in the SAME zone as ensureInitialized, hence the wrap of the whole body.
+  runZonedGuarded<void>(() async {
+    await _boot(args);
+  }, (error, stack) {
+    CrashLog.record(error, stack, source: 'zone');
+  });
+}
+
+Future<void> _boot(List<String> args) async {
   if (kDebugMode) print('main() started');
   // Autostart launches with --hidden: tray icon + hotkey only, no window.
   final startHidden = args.contains('--hidden');
   WidgetsFlutterBinding.ensureInitialized();
+
+  FlutterError.onError = (details) {
+    CrashLog.record(details.exception, details.stack, source: 'flutter');
+    FlutterError.presentError(details);
+  };
+  // Resolve the log dir concurrently; earlier records are buffered.
+  unawaited(getApplicationDocumentsDirectory().then(
+    (d) => CrashLog.init(Directory('${d.path}\\slate_data\\logs')),
+  ));
 
   // Kick off everything independent AT ONCE instead of serializing await-by-await:
   // font warm, the prefs file, and window init all overlap. Fonts are still

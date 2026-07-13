@@ -3,8 +3,10 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
+import '../state/crash_log.dart';
 import '../state/export_service.dart';
 import '../state/local_prefs.dart';
 import '../state/task_state.dart';
@@ -76,6 +78,7 @@ class TrayShell with TrayListener {
               'Quick Capture (${QuickCaptureController.instance.hotkeyLabel})'),
       MenuItem.separator(),
       MenuItem(key: 'export', label: 'Export data…'),
+      MenuItem(key: 'report', label: 'Report a problem'),
       MenuItem.separator(),
       if (hasDemo) MenuItem(key: 'clear_demo', label: 'Clear sample tasks'),
       MenuItem.checkbox(
@@ -135,6 +138,17 @@ class TrayShell with TrayListener {
           await Process.start('explorer.exe', ['/select,${file.path}']);
         } catch (e) {
           debugPrint('tray: export failed: $e');
+        }
+      case 'report':
+        try {
+          // Testers can't be asked to hunt for files — open the log folder.
+          final path = CrashLog.folderPath ??
+              '${(await getApplicationDocumentsDirectory()).path}'
+                  '\\slate_data\\logs';
+          Directory(path).createSync(recursive: true);
+          await Process.start('explorer.exe', [path]);
+        } catch (e) {
+          debugPrint('tray: report open failed: $e');
         }
       case 'clear_demo':
         taskState?.clearDemoTasks();
