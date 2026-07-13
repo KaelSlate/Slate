@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
+import '../state/export_service.dart';
 import '../state/local_prefs.dart';
 import '../state/task_state.dart';
 import 'quick_capture_controller.dart';
@@ -74,6 +75,8 @@ class TrayShell with TrayListener {
           label:
               'Quick Capture (${QuickCaptureController.instance.hotkeyLabel})'),
       MenuItem.separator(),
+      MenuItem(key: 'export', label: 'Export data…'),
+      MenuItem.separator(),
       if (hasDemo) MenuItem(key: 'clear_demo', label: 'Clear sample tasks'),
       MenuItem.checkbox(
         key: 'autostart',
@@ -125,6 +128,14 @@ class TrayShell with TrayListener {
         await openApp();
       case 'capture':
         await QuickCaptureController.instance.summon();
+      case 'export':
+        try {
+          final file = await exportAllTasks(SlateCore());
+          // Explorer with the fresh export selected — the feedback IS the file.
+          await Process.start('explorer.exe', ['/select,${file.path}']);
+        } catch (e) {
+          debugPrint('tray: export failed: $e');
+        }
       case 'clear_demo':
         taskState?.clearDemoTasks();
         await _rebuildMenu();
