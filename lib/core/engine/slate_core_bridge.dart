@@ -238,6 +238,13 @@ typedef FfiUpdateTaskExDart = Pointer<CTask> Function(
   Pointer<Utf8>, Pointer<Utf8>, int, int, int, int, Pointer<Pointer<Utf8>>, int, int,
 );
 
+typedef FfiRestoreTaskNative = Pointer<CTask> Function(
+  Pointer<Utf8>, Int64, Int64, Int64, Uint8, Pointer<Pointer<Utf8>>, IntPtr, Int32, Int32, Int32,
+);
+typedef FfiRestoreTaskDart = Pointer<CTask> Function(
+  Pointer<Utf8>, int, int, int, int, Pointer<Pointer<Utf8>>, int, int, int, int,
+);
+
 // ════════════════════════════════════════════════════════════════════════════
 // SLATE CORE - MAIN FFI CLASS (PHASE 3)
 // ════════════════════════════════════════════════════════════════════════════
@@ -338,6 +345,7 @@ class SlateCore {
   FfiFreeParseResultDart? _ffiFreeParseResult;
   FfiCreateTaskExDart? _ffiCreateTaskEx;
   FfiUpdateTaskExDart? _ffiUpdateTaskEx;
+  FfiRestoreTaskDart? _ffiRestoreTask;
   
   void _loadFunctions() {
     if (_lib == null) return;
@@ -392,6 +400,7 @@ class SlateCore {
       _ffiFreeParseResult = _lib!.lookupFunction<FfiFreeParseResultNative, FfiFreeParseResultDart>('ffi_free_parse_result');
       _ffiCreateTaskEx = _lib!.lookupFunction<FfiCreateTaskExNative, FfiCreateTaskExDart>('ffi_create_task_ex');
       _ffiUpdateTaskEx = _lib!.lookupFunction<FfiUpdateTaskExNative, FfiUpdateTaskExDart>('ffi_update_task_ex');
+      _ffiRestoreTask = _lib!.lookupFunction<FfiRestoreTaskNative, FfiRestoreTaskDart>('ffi_restore_task');
       
     } catch (e) {
       print('⚠ FFI: Function binding failed: $e');
@@ -529,15 +538,62 @@ class SlateCore {
     }
   }
 
-  /// Remove a task from the Rust store by ID.
-  void removeTaskFromStore(String taskId) {
+  /// Remove a task from the Rust store by ID. Returns the task's position in
+  /// its day list (-1 if unknown) — the undo snapshot restores it there.
+  int removeTaskFromStore(String taskId) {
+    final fallbackIdx = _fallbackTasks.indexWhere((t) => t.id == taskId);
     _fallbackTasks.removeWhere((t) => t.id == taskId);
     if (_ffiConnected && _ffiRemoveTask != null) {
-      using((Arena arena) {
+      return using((Arena arena) {
         final idPtr = _safeCString(taskId, arena);
-        _ffiRemoveTask!(idPtr);
+        return _ffiRemoveTask!(idPtr);
       });
     }
+    return fallbackIdx;
+  }
+
+  /// Undo path: rebuild a deleted task in one call — full state (done, inbox,
+  /// tags, priority, times, ORIGINAL createdAt) at its original day position.
+  RustTask? restoreTask(RustTask snapshot, int dayIndex) {
+    if (_ffiConnected && _ffiRestoreTask != null && _ffiFreeTask != null) {
+      final restored = using((Arena arena) {
+        final titlePtr = _safeCString(snapshot.title, arena);
+        final tagPtrs = arena<Pointer<Utf8>>(snapshot.tags.length);
+        for (int i = 0; i < snapshot.tags.length; i++) {
+          tagPtrs[i] = _safeCString(snapshot.tags[i], arena);
+        }
+        final cTaskPtr = _ffiRestoreTask!(
+          titlePtr,
+          snapshot.createdAt,
+          snapshot.startTime ?? -1,
+          snapshot.endTime ?? -1,
+          snapshot.priority,
+          tagPtrs.cast<Pointer<Utf8>>(),
+          snapshot.tags.length,
+          snapshot.isInbox ? 1 : 0,
+          snapshot.isCompleted ? 1 : 0,
+          dayIndex < 0 ? 0 : dayIndex,
+        );
+        if (cTaskPtr != nullptr) {
+          try {
+            final task = _cTaskToRustTask(cTaskPtr.ref);
+            _fallbackTasks.insert(0, task);
+            return task;
+          } finally {
+            _ffiFreeTask!(cTaskPtr);
+          }
+        }
+        return null;
+      });
+      if (restored != null) return restored;
+    }
+
+    // Dart fallback (stub engine): keep the snapshot with a fresh id.
+    final task = snapshot.copyWith(
+        id: _generateUUID(),
+        updatedAt: DateTime.now().millisecondsSinceEpoch);
+    _fallbackTasks.insert(dayIndex.clamp(0, _fallbackTasks.length), task);
+    return task;
   }
 
   /// Get task count from Rust store.

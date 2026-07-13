@@ -118,27 +118,47 @@ impl TaskStore {
         self.date_index.entry(day).or_default().push(id);
     }
 
-    /// Remove a task by ID from both structures. Returns the removed task if found.
-    pub fn remove(&mut self, task_id: &str) -> Option<RustTask> {
+    /// Remove a task by ID from both structures. Returns the removed task and
+    /// its position in the day's id list — undo restores it to that exact spot.
+    pub fn remove(&mut self, task_id: &str) -> Option<(RustTask, usize)> {
         if let Some(task) = self.tasks.remove(task_id) {
             let day = Self::day_start_ms(task.created_at);
+            let mut index = 0usize;
             if let Some(ids) = self.date_index.get_mut(&day) {
+                index = ids.iter().position(|id| id == task_id).unwrap_or(0);
                 ids.retain(|id| id != task_id);
                 if ids.is_empty() {
                     self.date_index.remove(&day);
                 }
             }
-            Some(task)
+            Some((task, index))
         } else {
             None
         }
     }
 
-    /// Update a task in-place. Handles reindexing if created_at changed.
+    /// Insert with a KNOWN day-list position (clamped) — the undo restore path.
+    pub fn insert_at(&mut self, task: RustTask, day_index: usize) {
+        let day = Self::day_start_ms(task.created_at);
+        let id = task.id.clone();
+        self.tasks.insert(id.clone(), task);
+        let ids = self.date_index.entry(day).or_default();
+        let at = day_index.min(ids.len());
+        ids.insert(at, id);
+    }
+
+    /// Update a task in-place. Reindexes if the day changed; an edit that
+    /// KEEPS the day also keeps the task's position in the day list (the old
+    /// remove+push silently moved every edited task to the end).
     pub fn update(&mut self, task: RustTask) {
         let id = task.id.clone();
-        self.remove(&id);
-        self.insert(task);
+        let new_day = Self::day_start_ms(task.created_at);
+        match self.remove(&id) {
+            Some((old, index)) if Self::day_start_ms(old.created_at) == new_day => {
+                self.insert_at(task, index);
+            }
+            _ => self.insert(task),
+        }
     }
 
     /// Get all tasks for a specific day (by day-start ms).
@@ -549,14 +569,16 @@ pub fn update_task(task: RustTask) {
 }
 
 /// Remove a task from the store by ID. Soft-deletes in SQLite asynchronously.
+/// Returns the task's position in its day list (-1 if not found) — the undo
+/// snapshot keeps it so restore lands on the same spot.
 #[flutter_rust_bridge::frb(sync)]
-pub fn remove_task(task_id: String) {
+pub fn remove_task(task_id: String) -> i32 {
     let now = chrono::Utc::now().timestamp_millis();
 
-    {
+    let index = {
         let mut store = TASK_STORE.write().unwrap_or_else(|e| e.into_inner());
-        store.remove(&task_id);
-    }
+        store.remove(&task_id).map(|(_, i)| i as i32).unwrap_or(-1)
+    };
 
     // Fix 2: async I/O
     async_soft_delete(&task_id, now);
@@ -565,6 +587,49 @@ pub fn remove_task(task_id: String) {
         task_id: task_id.clone(),
         payload: "{}".to_string(),
     });
+    index
+}
+
+/// Rebuild a deleted task in ONE call — full state (done, inbox, tags,
+/// priority, times, ORIGINAL created_at) and its original day-list position.
+/// New id; persists exactly like a create.
+#[flutter_rust_bridge::frb(sync)]
+pub fn restore_task(
+    title: String,
+    created_at: i64,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    priority: u8,
+    tags: Vec<String>,
+    is_inbox: bool,
+    is_completed: bool,
+    day_index: usize,
+) -> RustTask {
+    let now = chrono::Utc::now().timestamp_millis();
+    let task = RustTask {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: clamp_title(title),
+        is_completed,
+        created_at,
+        updated_at: now,
+        start_at: None,
+        end_at: None,
+        user_id: None,
+        is_inbox,
+        start_time,
+        end_time,
+        tags,
+        priority: priority.min(2),
+    };
+
+    {
+        let mut store = TASK_STORE.write().unwrap_or_else(|e| e.into_inner());
+        store.insert_at(task.clone(), day_index);
+    }
+
+    async_upsert(&task);
+    async_enqueue_sync(SyncOp::Create, &task.id, &task);
+    task
 }
 
 /// Get the total number of tasks in the store.
@@ -1231,8 +1296,51 @@ pub extern "C" fn ffi_get_all_tasks() -> CTaskList {
 pub extern "C" fn ffi_remove_task(id_ptr: *const c_char) -> i32 {
     let id = unsafe { safe_cstr_to_string(id_ptr) };
     if id.is_empty() { return -1; }
-    remove_task(id);
-    0
+    remove_task(id) // day-list index for the undo snapshot, -1 if unknown
+}
+
+/// Undo path: recreate a deleted task with FULL state at its original
+/// day-list position. Caller must free the returned task with ffi_free_task.
+#[no_mangle]
+pub extern "C" fn ffi_restore_task(
+    title_ptr: *const c_char,
+    created_at: i64,
+    start_time: i64,
+    end_time: i64,
+    priority: u8,
+    tags_ptr: *const *const c_char,
+    tag_count: usize,
+    is_inbox: i32,
+    is_completed: i32,
+    day_index: i32,
+) -> *mut CTask {
+    let title = unsafe { safe_cstr_to_string(title_ptr) };
+    if title.trim().is_empty() { return std::ptr::null_mut(); }
+    let tag_count = tag_count.min(100);
+    let tags: Vec<String> = if !tags_ptr.is_null() && tag_count > 0 {
+        let tag_slice = unsafe { std::slice::from_raw_parts(tags_ptr, tag_count) };
+        tag_slice.iter()
+            .filter_map(|&ptr| {
+                if ptr.is_null() { return None; }
+                unsafe { CStr::from_ptr(ptr) }.to_str().ok().map(|s| s.to_string())
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let task = restore_task(
+        title,
+        created_at,
+        if start_time >= 0 { Some(start_time) } else { None },
+        if end_time >= 0 { Some(end_time) } else { None },
+        priority,
+        tags,
+        is_inbox != 0,
+        is_completed != 0,
+        day_index.max(0) as usize,
+    );
+    Box::into_raw(Box::new(CTask::from_rust_task(&task)))
 }
 
 #[no_mangle]

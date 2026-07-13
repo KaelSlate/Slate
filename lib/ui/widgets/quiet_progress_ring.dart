@@ -112,7 +112,9 @@ class _RingPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = stroke
         ..strokeCap = StrokeCap.round
-        ..color = _done.withValues(alpha: complete ? 0.85 : 0.55),
+        // Complete stays calm too: seven filled rings in a week row must
+        // read as "settled", not as seven green lamps.
+        ..color = _done.withValues(alpha: complete ? 0.70 : 0.55),
     );
   }
 

@@ -22,6 +22,7 @@ class LocalPrefs {
   static const _kWelcomed = 'slate_welcomed';
   static const _kAutostart = 'slate_autostart';
   static const _kSeeded = 'slate_seeded';
+  static const _kDemoIds = 'slate_demo_ids';
 
   /// Memoized load — main() and the engine (demo seeding) may both await it.
   static Future<LocalPrefs>? _loading;
@@ -61,6 +62,19 @@ class LocalPrefs {
   bool get welcomed => _data[_kWelcomed] == 'true';
   /// Demo tasks were seeded once — never re-seed, even if the user deletes them.
   bool get seeded => _data[_kSeeded] == 'true';
+
+  /// Ids of the seeded sample tasks — no visual tag on the cards; the tray's
+  /// "Clear sample tasks" sweeps by id.
+  List<String> get demoIds =>
+      (_data[_kDemoIds] as List?)?.cast<String>() ?? const [];
+  set demoIds(List<String> v) {
+    if (v.isEmpty) {
+      _data.remove(_kDemoIds);
+    } else {
+      _data[_kDemoIds] = v;
+    }
+    _persist();
+  }
   /// Launch at Windows login (tray-resident, --hidden). Default ON — the
   /// global capture hotkey is the product's core promise.
   bool get autostart => _data[_kAutostart] != 'false';

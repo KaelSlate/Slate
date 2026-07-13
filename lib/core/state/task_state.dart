@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../engine/capture_destination.dart';
 import '../engine/slate_core_bridge.dart';
+import '../interaction/delete_settle.dart';
 import 'first_run.dart';
 import 'local_prefs.dart';
 import 'toast_bus.dart';
@@ -145,10 +146,12 @@ class TaskState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// First-launch demo set — real engine tasks (FFI), deletable like any task.
-  /// Seeded ONCE (slate_seeded), only into a truly empty store, and muted so
-  /// seeding never counts as the user's first capture. All carry #demo so the
-  /// tray's "Clear sample tasks" can find them later.
+  /// First-launch sample week — real engine tasks (FFI), deletable like any
+  /// task. Natural content (no "#demo" pollution): with/without time, one
+  /// done, priorities, tags, inbox thoughts — so day cells open ALREADY split
+  /// into scheduled/unscheduled and the progress ring lives. Seeded ONCE
+  /// (slate_seeded), only into an empty store, muted (not a user capture);
+  /// ids go to prefs so the tray's "Clear sample tasks" can sweep them.
   @visibleForTesting
   Future<void> maybeSeedDemo() async {
     final prefs = await LocalPrefs.load();
@@ -157,55 +160,69 @@ class TaskState extends ChangeNotifier {
     try {
       final now = DateTime.now();
       final today = DateTime(now.year, now.month, now.day);
-      final anchor = now.hour.clamp(8, 17); // keep demo times inside the day
-      const tags = ['demo'];
-      void timed(String title, DateTime day, int start, int end,
-          {int priority = 0}) {
-        core.createTaskEx(
+      final ids = <String>[];
+      RustTask timed(String title, int dayOffset, int start, int end,
+          {int priority = 0, List<String> tags = const []}) {
+        final t = core.createTaskEx(
           title: title,
-          dayTs: day.millisecondsSinceEpoch,
+          dayTs: DateTime(now.year, now.month, now.day + dayOffset)
+              .millisecondsSinceEpoch,
           startTime: start,
           endTime: end,
           priority: priority,
           tags: tags,
         );
+        ids.add(t.id);
+        return t;
       }
 
-      timed('Check me off — it feels good', today, (anchor + 1) * 60,
-          (anchor + 1) * 60 + 45, priority: 2);
-      timed('Drag me along the timeline', today, (anchor + 2) * 60 + 30,
-          (anchor + 3) * 60 + 30);
-      timed('Stretch me — pull my right edge', today, (anchor + 4) * 60,
-          (anchor + 5) * 60);
-      core.createTaskEx(
-        title: 'Drop me onto the timeline',
-        dayTs: today.millisecondsSinceEpoch,
-        tags: tags,
-      );
-      timed('Tomorrow has room too',
-          DateTime(now.year, now.month, now.day + 1), 9 * 60, 9 * 60 + 45);
-      for (final thought in [
-        'Ideas wait here — no day needed',
-        'Drag a thought onto any day',
-      ]) {
-        final t = core.createInboxTask(
-            thought, DateTime.now().millisecondsSinceEpoch);
-        core.updateTaskInStore(t.copyWith(tags: tags));
-      }
-      prefs.seeded = true;
+      final run = timed('Morning run', 0, 7 * 60 + 30, 8 * 60,
+          tags: ['health']);
+      core.toggleTask(run); // one thing already done — the ring breathes
+      timed('Coffee with Anna', 0, 9 * 60 + 30, 10 * 60 + 15, tags: ['life']);
+      timed('Deep work — finish the draft', 0, 14 * 60, 16 * 60, priority: 2);
+      ids.add(core
+          .createTaskEx(
+            title: 'Reply to Mark about the offer',
+            dayTs: today.millisecondsSinceEpoch,
+            priority: 1,
+          )
+          .id);
+      timed('Gym — legs day', 1, 11 * 60, 12 * 60, tags: ['health']);
+      ids.add(core
+          .createTaskEx(
+            title: 'Plan the weekend trip',
+            dayTs: DateTime(now.year, now.month, now.day + 1)
+                .millisecondsSinceEpoch,
+            tags: ['life'],
+          )
+          .id);
+      timed('Team sync', 2, 10 * 60, 10 * 60 + 30, tags: ['work']);
+      final spark = core.createInboxTask('Idea: a honey-dark theme for the site',
+          DateTime.now().millisecondsSinceEpoch);
+      ids.add(spark.id);
+      final flights = core.createInboxTask('Book flights for August',
+          DateTime.now().millisecondsSinceEpoch);
+      core.updateTaskInStore(flights.copyWith(tags: ['travel']));
+      ids.add(flights.id);
+
+      prefs
+        ..seeded = true
+        ..demoIds = ids;
       _tasks = core.getAllTasks();
     } finally {
       FirstRunController.instance.muted = false;
     }
   }
 
-  /// Tray action: remove every #demo sample in one sweep.
+  /// Tray action: sweep the seeded samples (by remembered id) in one pass.
   void clearDemoTasks() {
-    final demos = _tasks.where((t) => t.tags.contains('demo')).toList();
-    if (demos.isEmpty) return;
-    for (final t in demos) {
+    final ids = LocalPrefs.instance.demoIds.toSet();
+    if (ids.isEmpty) return;
+    for (final t in _tasks.where((t) => ids.contains(t.id)).toList()) {
       core.removeTaskFromStore(t.id);
     }
+    LocalPrefs.instance.demoIds = const [];
     refreshFromStore();
   }
 
@@ -384,8 +401,9 @@ class TaskState extends ChangeNotifier {
   /// The full snapshot goes on the undo stack — Ctrl+Z rebuilds every field.
   void deleteTask(RustTask task) {
     _tasks.removeWhere((t) => t.id == task.id);
-    core.removeTaskFromStore(task.id);
-    _pushUndo(_UndoEntry.delete(task));
+    final dayIndex = core.removeTaskFromStore(task.id);
+    DeleteSettle.stamp(); // toggle taps pause while rows glide up
+    _pushUndo(_UndoEntry.delete(task, dayIndex));
     _invalidateTaskCaches(task);
     _bumpTick();
     notifyListeners();
@@ -418,7 +436,8 @@ class TaskState extends ChangeNotifier {
       while (_undoStack.isNotEmpty) {
         final entry = _undoStack.removeLast();
         if (entry.snapshot != null) {
-          final t = _restoreDeleted(entry.snapshot!);
+          final t = _restoreDeleted(entry.snapshot!, entry.dayIndex);
+          if (t == null) continue;
           return '“${_ellipsize(t.title)}” is back';
         }
         // Toggle: the task may have been deleted since — skip to older entries.
@@ -433,25 +452,11 @@ class TaskState extends ChangeNotifier {
     }
   }
 
-  RustTask _restoreDeleted(RustTask s) {
-    RustTask restored;
-    if (s.isInbox) {
-      restored = core.createInboxTask(s.title, s.createdAt);
-      if (s.priority != 0 || s.tags.isNotEmpty) {
-        restored = restored.copyWith(priority: s.priority, tags: s.tags);
-        core.updateTaskInStore(restored);
-      }
-    } else {
-      restored = core.createTaskEx(
-        title: s.title,
-        dayTs: s.createdAt,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        priority: s.priority,
-        tags: s.tags,
-      );
-    }
-    if (s.isCompleted) restored = core.toggleTask(restored);
+  RustTask? _restoreDeleted(RustTask s, int dayIndex) {
+    // One FFI call rebuilds every field AND the original day-list position —
+    // undoing a burst of deletes puts each task back on its own spot.
+    final restored = core.restoreTask(s, dayIndex);
+    if (restored == null) return null;
     _tasks.insert(0, restored);
     _invalidateTaskCaches(restored);
     _bumpTick();
@@ -502,12 +507,16 @@ class TaskState extends ChangeNotifier {
   }
 }
 
-/// One undoable mutation: a toggle (by id) or a delete (full snapshot).
+/// One undoable mutation: a toggle (by id) or a delete (full snapshot plus
+/// the task's original position in its day list).
 class _UndoEntry {
   final String taskId;
   final RustTask? snapshot;
-  _UndoEntry.toggle(this.taskId) : snapshot = null;
-  _UndoEntry.delete(RustTask task)
+  final int dayIndex;
+  _UndoEntry.toggle(this.taskId)
+      : snapshot = null,
+        dayIndex = -1;
+  _UndoEntry.delete(RustTask task, this.dayIndex)
       : taskId = task.id,
         snapshot = task;
 }

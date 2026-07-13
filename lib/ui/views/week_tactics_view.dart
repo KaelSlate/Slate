@@ -5,6 +5,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/engine/slate_core_bridge.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
+import '../../core/state/first_run.dart';
 import '../../core/state/task_state.dart';
 import '../../core/interaction/drag_session.dart';
 import '../widgets/hover_task_card.dart';
@@ -584,6 +585,12 @@ class _DayColumnState extends State<_DayColumn> {
   Widget _buildColumnContent(List<RustTask> dayTasks) {
     final taskCount = dayTasks.length;
     final completedCount = dayTasks.where((t) => t.isCompleted).length;
+    // Past days recede like in the month view — the week reads as "now and
+    // ahead", yesterday is a quiet record, not a competing surface.
+    final now = DateTime.now();
+    final isPast = !widget.cell.isToday &&
+        DateTime.fromMillisecondsSinceEpoch(widget.cell.dateTimestamp)
+            .isBefore(DateTime(now.year, now.month, now.day));
 
     // Single MouseRegion at column root drives ALL hover states.
     // No nested MouseRegions on the background — eliminates flicker.
@@ -612,7 +619,9 @@ class _DayColumnState extends State<_DayColumn> {
               ),
               // Top layer: content
               Positioned.fill(
-                child: Column(
+                child: Opacity(
+                  opacity: isPast ? 0.5 : 1.0,
+                  child: Column(
                   children: [
                     GestureDetector(
                       behavior: HitTestBehavior.opaque,
@@ -675,6 +684,7 @@ class _DayColumnState extends State<_DayColumn> {
                       child: _buildTaskList(context, dayTasks),
                     ),
                   ],
+                  ),
                 ),
               ),
             ],
@@ -711,6 +721,10 @@ class _DayColumnState extends State<_DayColumn> {
       final allocated = dayTasks.where((t) => t.startTime != null).toList()
         ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
       final total = unallocated.length + allocated.length;
+
+      // First run: an empty day shows its anatomy as ghosts (timed above the
+      // divider, someday below) instead of a void — until the first capture.
+      if (total == 0) return const _GhostDayStructure();
       final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
 
       final avail = constraints.maxHeight - 12; // vertical padding
@@ -887,6 +901,73 @@ class _HoverGlowBackground extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GHOST DAY STRUCTURE — first-run silhouette of an empty day cell
+// ═══════════════════════════════════════════════════════════════════════════
+class _GhostDayStructure extends StatelessWidget {
+  const _GhostDayStructure();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: FirstRunController.instance.hintsActive,
+      builder: (context, active, child) =>
+          active ? child! : const SizedBox.shrink(),
+      child: IgnorePointer(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _ghostRow('9:00 · a timed plan'),
+              const _PremiumMiniDivider(),
+              _ghostRow('a task for someday'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _ghostRow(String text) {
+    return Container(
+      height: 34,
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.018),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+            color: Colors.white.withValues(alpha: 0.045), width: 0.5),
+      ),
+      child: Row(children: [
+        Container(
+          width: 16,
+          height: 16,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+                color: Colors.white.withValues(alpha: 0.08), width: 1),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.clip,
+            style: AppFonts.inter(
+              fontSize: 11,
+              color: Colors.white.withValues(alpha: 0.16),
+              letterSpacing: 0.1,
+            ),
+          ),
+        ),
+      ]),
     );
   }
 }

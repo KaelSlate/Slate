@@ -6,6 +6,7 @@ import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/engine/slate_core_bridge.dart';
+import '../../core/state/first_run.dart';
 import '../../core/theme/app_theme.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -464,11 +465,15 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
 
   /// Calm right-side destination readout («Inbox», «Tomorrow 09:00»). Always
   /// on in floating capture; in-app only when the text carries a date.
+  /// First-run floating pill whispers the rapid-dump chord alongside.
   Widget _destinationChip() {
     final show = widget.destinationLabel != null &&
         _controller.text.trim().isNotEmpty &&
         (widget.floating || _lastResult.hasDate);
     final label = show ? widget.destinationLabel!(_lastResult) : null;
+    final whisper = show &&
+        widget.floating &&
+        FirstRunController.instance.hintsActive.value;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 180),
       switchInCurve: Curves.easeOutCubic,
@@ -476,16 +481,33 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
       child: label == null
           ? const SizedBox.shrink()
           : Padding(
-              key: ValueKey(label),
+              key: ValueKey('$label|$whisper'),
               padding: const EdgeInsets.only(left: 14),
-              child: Text(
-                label,
-                style: AppFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.white.withOpacity(0.38),
-                  letterSpacing: -0.1,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: AppFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withOpacity(0.38),
+                      letterSpacing: -0.1,
+                    ),
+                  ),
+                  if (whisper)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 10),
+                      child: Text(
+                        'Shift+Enter — keep going',
+                        style: AppFonts.inter(
+                          fontSize: 10.5,
+                          color: Colors.white.withOpacity(0.20),
+                          letterSpacing: 0.1,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
     );

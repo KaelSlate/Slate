@@ -67,9 +67,10 @@ class TrayShell with TrayListener {
   }
 
   Future<void> _rebuildMenu() async {
-    // First-run demo tasks still around → offer a one-click sweep.
-    final hasDemo =
-        taskState?.tasks.any((t) => t.tags.contains('demo')) ?? false;
+    // First-run sample tasks still around → offer a one-click sweep.
+    final demoIds = LocalPrefs.instance.demoIds.toSet();
+    final hasDemo = demoIds.isNotEmpty &&
+        (taskState?.tasks.any((t) => demoIds.contains(t.id)) ?? false);
     await trayManager.setContextMenu(Menu(items: [
       MenuItem(key: 'open', label: 'Open Slate'),
       MenuItem(

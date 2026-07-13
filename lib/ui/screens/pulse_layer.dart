@@ -240,16 +240,6 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
       return true;
     }
 
-    // ── 'C' — capture from WEEK/MONTH too (day view opens its own pill) ──
-    // Same summon as the global hotkey, so the "C — capture" hint is honest
-    // on every view, not only inside a day.
-    if (event.logicalKey == LogicalKeyboardKey.keyC && noModifiers) {
-      if (_isTextFieldFocused()) return false;
-      if (StaircaseState.currentLevel == StaircaseLevel.day) return false;
-      QuickCaptureController.instance.summon();
-      return true;
-    }
-
     // ── 'I' — Inbox toggle ────────────────────────────────────────────────
     if (event.logicalKey == LogicalKeyboardKey.keyI && noModifiers) {
       if (_isTextFieldFocused()) return false;
@@ -630,11 +620,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
             // Hover-peek popover — full title / month-day list. IgnorePointer,
             // so it never steals hover. Above cards, below the warmup veil.
             const TaskPeekLayer(),
-            // Quiet first-run chord hints (C / V / I) — ghost line, week/month
-            // only (the day view teaches C in its own empty state). Gone
-            // forever at the first capture.
-            if (StaircaseState.currentLevel != StaircaseLevel.day)
-              const _FirstRunHints(),
+            // Quiet first-run chord hints — one ghost line, content follows
+            // the current view. Gone forever at the first capture.
+            const _FirstRunHints(),
             // Calm self-dismissing toasts (undo etc.) — above the drawer.
             const SlateToastLayer(),
             // First-run welcome — teaches the one hotkey, confirms the first
@@ -1061,16 +1049,44 @@ enum _WarmupPhase { veiled, warming, revealing, done }
 
 // ───────────────────────────────────────────────────────────────────────────────
 // FIRST-RUN HINTS — one ghost line, bottom center, until the first capture.
-// Empty-state guidance, not a tutorial: C / V / I as whisper chords.
+// Content follows the view: week/month teach the global chords, the day view
+// teaches its own C and the way back. Whisper, never a tutorial balloon.
 // ───────────────────────────────────────────────────────────────────────────────
 class _FirstRunHints extends StatelessWidget {
   const _FirstRunHints();
 
   @override
   Widget build(BuildContext context) {
-    final vTarget = StaircaseState.currentLevel == StaircaseLevel.weekTactics
-        ? 'month'
-        : 'week';
+    final level = StaircaseState.currentLevel;
+    final hotkey = QuickCaptureController.instance.hotkeyLabel;
+    final List<Widget> items;
+    switch (level) {
+      case StaircaseLevel.day:
+        items = [
+          _chord('C', 'add to this day'),
+          _dot(),
+          _chord('Esc', 'back'),
+          _dot(),
+          _chord('Ctrl+scroll', 'zoom out'),
+        ];
+      case StaircaseLevel.weekTactics:
+      case StaircaseLevel.monthGrid:
+        final other =
+            level == StaircaseLevel.weekTactics ? 'month' : 'week';
+        final pages =
+            level == StaircaseLevel.weekTactics ? 'weeks' : 'months';
+        items = [
+          _chord(hotkey, 'capture'),
+          _dot(),
+          _chord('V', other),
+          _dot(),
+          _chord('I', 'inbox'),
+          _dot(),
+          _chord('Ctrl+scroll', 'zoom'),
+          _dot(),
+          _chord('↑↓', pages),
+        ];
+    }
     return Positioned(
       left: 0,
       right: 0,
@@ -1087,13 +1103,7 @@ class _FirstRunHints extends StatelessWidget {
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _chord('C', 'capture'),
-            _dot(),
-            _chord('V', vTarget),
-            _dot(),
-            _chord('I', 'inbox'),
-          ],
+          children: items,
         ),
       ),
     );

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/engine/slate_core_bridge.dart';
+import '../../core/interaction/delete_settle.dart';
 import '../../core/interaction/drag_session.dart';
 import '../overlays/task_peek_layer.dart';
 
@@ -167,7 +168,12 @@ class _HoverTaskCardState extends State<HoverTaskCard>
           onExit: _onExit,
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
-            onTap: widget.onTap,
+            // While a delete's collapse is settling, the row under the cursor
+            // is mid-glide — a spam click must not strike it by accident.
+            onTap: () {
+              if (DeleteSettle.settling) return;
+              widget.onTap?.call();
+            },
             onLongPress: widget.onLongPress,
             child: AnimatedBuilder(
               animation: _hoverAnim,

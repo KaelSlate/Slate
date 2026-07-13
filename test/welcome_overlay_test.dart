@@ -55,7 +55,9 @@ void main() {
     expect(find.text('Welcome to Slate.'), findsNothing);
 
     await tester.pump(const Duration(milliseconds: 3100)); // auto-dismiss timer
-    await tester.pump(const Duration(milliseconds: 400)); // fade-out
+    await tester.pump(); // exit ticker arms (first tick = t0)
+    await tester.pump(const Duration(milliseconds: 500)); // 450ms exit
+    await tester.pump(const Duration(milliseconds: 50)); // completion frame
     expect(gone, isTrue);
     expect(StaircaseState.isWelcoming, isFalse);
 
@@ -69,7 +71,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.pump(const Duration(milliseconds: 400)); // fade-out
+    await tester.pump(); // exit ticker arms (first tick = t0)
+    await tester.pump(const Duration(milliseconds: 500)); // 450ms exit
+    await tester.pump(const Duration(milliseconds: 50)); // completion frame
     expect(gone, isTrue);
     expect(StaircaseState.isWelcoming, isFalse);
     expect(FirstRunController.instance.firstLanding.value, isNull,

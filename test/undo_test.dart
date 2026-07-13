@@ -95,6 +95,25 @@ void main() {
     expect(t.isCompleted, isFalse);
   });
 
+  test('undo puts tasks back on their original day-list spots', () async {
+    final now = DateTime.now();
+    final day = DateTime(now.year, now.month, now.day + 3);
+    final dayTs = day.millisecondsSinceEpoch;
+    for (final t in ['ord A', 'ord B', 'ord C']) {
+      await ts.createTask(t, dayTs);
+    }
+    final before = ts.core.tasksForDate(dayTs).map((t) => t.title).toList();
+
+    // Scattered deletes (middle first) — the old append-on-restore shuffled.
+    ts.deleteTask(byTitle('ord B'));
+    ts.deleteTask(byTitle('ord A'));
+    expect(ts.undoLast(), contains('ord A'));
+    expect(ts.undoLast(), contains('ord B'));
+
+    final after = ts.core.tasksForDate(dayTs).map((t) => t.title).toList();
+    expect(after, before, reason: 'day-list order restored exactly');
+  });
+
   test('undo skips toggles of since-deleted tasks, empty stack is graceful',
       () async {
     final day = DateTime.now().millisecondsSinceEpoch;

@@ -903,6 +903,81 @@ class _DayFlowViewState extends State<DayFlowView>
   }
 
   Widget _buildEmptyState() {
+    // First run: no void — the day shows its own anatomy as ghosts (timed on
+    // top, unscheduled below) until the first capture. After that an empty
+    // day is calm air again.
+    return ValueListenableBuilder<bool>(
+      valueListenable: FirstRunController.instance.hintsActive,
+      builder: (context, active, _) =>
+          active ? _buildFirstRunGhost() : _buildCalmEmpty(),
+    );
+  }
+
+  Widget _buildFirstRunGhost() {
+    Widget label(String text) => Padding(
+          padding: const EdgeInsets.only(top: 10, bottom: 6),
+          child: Text(text,
+              style: AppFonts.inter(
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.5,
+                color: Colors.white.withOpacity(0.16),
+              )),
+        );
+    Widget ghostRow(String text) => Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.018),
+            borderRadius: BorderRadius.circular(10),
+            border:
+                Border.all(color: Colors.white.withOpacity(0.045), width: 0.5),
+          ),
+          child: Row(children: [
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: Colors.white.withOpacity(0.08), width: 1),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(text,
+                style: AppFonts.inter(
+                  fontSize: 12.5,
+                  color: Colors.white.withOpacity(0.17),
+                  letterSpacing: 0.1,
+                )),
+          ]),
+        );
+
+    return IgnorePointer(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          label('SCHEDULED'),
+          ghostRow('9:00 · your first timed plan'),
+          const _ScheduleDivider(),
+          label('TO SCHEDULE'),
+          ghostRow('press C — it lands here'),
+          const SizedBox(height: 16),
+          Text(
+            'or ${QuickCaptureController.instance.hotkeyLabel} — from anywhere',
+            textAlign: TextAlign.center,
+            style: AppFonts.inter(
+              fontSize: 10,
+              color: Colors.white.withOpacity(0.14),
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCalmEmpty() {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -945,25 +1020,6 @@ class _DayFlowViewState extends State<DayFlowView>
                 const TextSpan(text: ' to add a task'),
               ],
             ),
-          ),
-          // First-run only: tie the empty day back to the one real lesson —
-          // the global hotkey. Fades out forever at the first capture.
-          ValueListenableBuilder<bool>(
-            valueListenable: FirstRunController.instance.hintsActive,
-            builder: (context, active, _) => !active
-                ? const SizedBox.shrink()
-                : Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(
-                      'or ${QuickCaptureController.instance.hotkeyLabel} — from anywhere',
-                      textAlign: TextAlign.center,
-                      style: AppFonts.inter(
-                        fontSize: 10,
-                        color: Colors.white.withOpacity(0.14),
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                  ),
           ),
           const SizedBox(height: 40),
         ],

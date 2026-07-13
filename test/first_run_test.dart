@@ -40,7 +40,7 @@ void main() {
     await LocalPrefs.load();
   });
 
-  test('demo seed: once, tagged, timed, muted — never a first capture',
+  test('demo seed: natural sample week, ids in prefs, muted — not a capture',
       () async {
     expect(ts.tasks, isEmpty, reason: 'FLUTTER_TEST gate skips auto-seed');
 
@@ -48,13 +48,20 @@ void main() {
     FirstRunController.instance.syncFromPrefs();
     await ts.maybeSeedDemo();
 
-    final demos = ts.tasks.where((t) => t.tags.contains('demo')).toList();
-    expect(demos.length, 7, reason: '5 day tasks + 2 inbox thoughts');
+    final ids = LocalPrefs.instance.demoIds.toSet();
+    final demos = ts.tasks.where((t) => ids.contains(t.id)).toList();
+    expect(demos.length, 9, reason: '7 day tasks + 2 inbox thoughts');
     expect(demos.where((t) => t.isInbox).length, 2);
-    expect(demos.where((t) => t.startTime != null).length, 4,
-        reason: '4 timed tasks lie on the timeline');
-    expect(demos.where((t) => !t.isInbox && t.startTime == null).length, 1,
-        reason: 'one unscheduled card to drag onto the timeline');
+    expect(demos.where((t) => t.startTime != null).length, 5,
+        reason: 'five timed tasks lie on the timeline');
+    expect(demos.where((t) => !t.isInbox && t.startTime == null).length, 2,
+        reason: 'unscheduled cards split the day cells');
+    expect(demos.where((t) => t.isCompleted).length, 1,
+        reason: 'one done task — the progress ring lives');
+    expect(demos.any((t) => t.priority == 2), isTrue);
+    expect(demos.any((t) => t.tags.isNotEmpty), isTrue);
+    expect(demos.any((t) => t.tags.contains('demo')), isFalse,
+        reason: 'no visual #demo pollution');
     expect(LocalPrefs.instance.seeded, isTrue);
     expect(FirstRunController.instance.firstLanding.value, isNull,
         reason: 'seeding is muted — not a capture');
@@ -62,7 +69,7 @@ void main() {
 
     // Re-seed attempt is a no-op (slate_seeded).
     await ts.maybeSeedDemo();
-    expect(ts.tasks.where((t) => t.tags.contains('demo')).length, 7);
+    expect(ts.tasks.length, 9);
   });
 
   test('first capture completes the arc: flags flip, landing label recorded',
@@ -84,10 +91,12 @@ void main() {
     expect(FirstRunController.instance.firstLanding.value, 'Inbox');
   });
 
-  test('clear sample tasks sweeps every #demo, keeps real ones', () {
-    expect(ts.tasks.where((t) => t.tags.contains('demo')), isNotEmpty);
+  test('clear sample tasks sweeps every seeded id, keeps real ones', () {
+    final ids = LocalPrefs.instance.demoIds.toSet();
+    expect(ids, isNotEmpty);
     ts.clearDemoTasks();
-    expect(ts.tasks.where((t) => t.tags.contains('demo')), isEmpty);
+    expect(ts.tasks.where((t) => ids.contains(t.id)), isEmpty);
+    expect(LocalPrefs.instance.demoIds, isEmpty);
     expect(ts.tasks.where((t) => t.title == 'my very first thought'),
         isNotEmpty, reason: 'real tasks survive the sweep');
   });
