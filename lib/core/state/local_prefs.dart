@@ -21,9 +21,13 @@ class LocalPrefs {
   static const _kOnboarded = 'slate_onboarded';
   static const _kWelcomed = 'slate_welcomed';
   static const _kAutostart = 'slate_autostart';
+  static const _kSeeded = 'slate_seeded';
 
-  /// Load (or migrate) prefs. Called once in main() before runApp.
-  static Future<LocalPrefs> load() async {
+  /// Memoized load — main() and the engine (demo seeding) may both await it.
+  static Future<LocalPrefs>? _loading;
+  static Future<LocalPrefs> load() => _loading ??= _doLoad();
+
+  static Future<LocalPrefs> _doLoad() async {
     final dir = await getApplicationDocumentsDirectory();
     final file = File('${dir.path}/slate_data/prefs.json');
     Map<String, dynamic> data = {};
@@ -55,6 +59,8 @@ class LocalPrefs {
   String? get viewPref => _data[_kViewPref] as String?;
   bool get onboarded => _data[_kOnboarded] == 'true';
   bool get welcomed => _data[_kWelcomed] == 'true';
+  /// Demo tasks were seeded once — never re-seed, even if the user deletes them.
+  bool get seeded => _data[_kSeeded] == 'true';
   /// Launch at Windows login (tray-resident, --hidden). Default ON — the
   /// global capture hotkey is the product's core promise.
   bool get autostart => _data[_kAutostart] != 'false';
@@ -63,6 +69,7 @@ class LocalPrefs {
   set onboarded(bool v) => _set(_kOnboarded, '$v');
   set welcomed(bool v) => _set(_kWelcomed, '$v');
   set autostart(bool v) => _set(_kAutostart, '$v');
+  set seeded(bool v) => _set(_kSeeded, '$v');
 
   void _set(String key, String? value) {
     if (value == null) {

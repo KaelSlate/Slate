@@ -8,8 +8,10 @@ import 'package:window_manager/window_manager.dart';
 import '../../core/state/local_prefs.dart';
 import '../../core/theme/app_theme.dart';
 
+import '../../core/engine/quick_capture_controller.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/interaction/drag_session.dart';
+import '../../core/state/first_run.dart';
 import '../../core/state/task_state.dart';
 // year_strategy_view.dart removed — Phase 3 3-layer hierarchy
 import '../views/month_grid_view.dart';
@@ -18,6 +20,7 @@ import '../views/day_flow_view.dart';
 import '../overlays/drag_preview_layer.dart';
 import '../overlays/task_peek_layer.dart';
 import '../overlays/inbox_drawer.dart';
+import '../overlays/welcome_overlay.dart';
 import '../warmup/warmup_layer.dart';
 
 /// Slate — Pulse Layer
@@ -46,6 +49,11 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
   // Inbox drawer controller
   late AnimationController _inboxCtrl;
   bool _inboxOpen = false;
+
+  /// First-run welcome overlay lives until its arc completes or Esc/click
+  /// hides it for the session. Read from the static ONCE per mount so a
+  /// mid-confirm rebuild can't yank the overlay out from under its own fade.
+  bool _welcomeActive = false;
 
   // ── Startup warmup (see warmup_layer.dart) ───────────────────────────────
   // veiled: branded veil up, engine still loading. warming: heavy surfaces
@@ -121,6 +129,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
       vsync: this,
     );
     HardwareKeyboard.instance.addHandler(_globalKeyHandler);
+    _welcomeActive = StaircaseState.showWelcome;
 
     // Shaders warm once per process. On remounts (e.g. returning from the
     // global quick-capture overlay) skip the veil entirely — no re-warm flash.
@@ -212,6 +221,16 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     final noModifiers = !HardwareKeyboard.instance.isControlPressed &&
         !HardwareKeyboard.instance.isMetaPressed &&
         !HardwareKeyboard.instance.isAltPressed;
+
+    // ── 'C' — capture from WEEK/MONTH too (day view opens its own pill) ──
+    // Same summon as the global hotkey, so the "C — capture" hint is honest
+    // on every view, not only inside a day.
+    if (event.logicalKey == LogicalKeyboardKey.keyC && noModifiers) {
+      if (_isTextFieldFocused()) return false;
+      if (StaircaseState.currentLevel == StaircaseLevel.day) return false;
+      QuickCaptureController.instance.summon();
+      return true;
+    }
 
     // ── 'I' — Inbox toggle ────────────────────────────────────────────────
     if (event.logicalKey == LogicalKeyboardKey.keyI && noModifiers) {
@@ -593,6 +612,20 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
             // Hover-peek popover — full title / month-day list. IgnorePointer,
             // so it never steals hover. Above cards, below the warmup veil.
             const TaskPeekLayer(),
+            // Quiet first-run chord hints (C / V / I) — ghost line, week/month
+            // only (the day view teaches C in its own empty state). Gone
+            // forever at the first capture.
+            if (StaircaseState.currentLevel != StaircaseLevel.day)
+              const _FirstRunHints(),
+            // First-run welcome — teaches the one hotkey, confirms the first
+            // capture, then never returns.
+            if (_welcomeActive && _warmupPhase == _WarmupPhase.done)
+              Positioned.fill(
+                child: WelcomeOverlay(onGone: () {
+                  StaircaseState.showWelcome = false;
+                  if (mounted) setState(() => _welcomeActive = false);
+                }),
+              ),
             // ── Startup warmup: heavy surfaces render under an opaque veil ──
             if (_warmupPhase == _WarmupPhase.warming)
               Positioned.fill(
@@ -1005,3 +1038,79 @@ class _WindowControlsState extends State<_WindowControls> with WindowListener {
 
 /// Startup warmup lifecycle (see WarmupStage/WarmupVeil in warmup_layer.dart).
 enum _WarmupPhase { veiled, warming, revealing, done }
+
+// ───────────────────────────────────────────────────────────────────────────────
+// FIRST-RUN HINTS — one ghost line, bottom center, until the first capture.
+// Empty-state guidance, not a tutorial: C / V / I as whisper chords.
+// ───────────────────────────────────────────────────────────────────────────────
+class _FirstRunHints extends StatelessWidget {
+  const _FirstRunHints();
+
+  @override
+  Widget build(BuildContext context) {
+    final vTarget = StaircaseState.currentLevel == StaircaseLevel.weekTactics
+        ? 'month'
+        : 'week';
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 16,
+      child: ValueListenableBuilder<bool>(
+        valueListenable: FirstRunController.instance.hintsActive,
+        builder: (context, active, child) => IgnorePointer(
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 450),
+            curve: Curves.easeOut,
+            opacity: active ? 1.0 : 0.0,
+            child: child,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _chord('C', 'capture'),
+            _dot(),
+            _chord('V', vTarget),
+            _dot(),
+            _chord('I', 'inbox'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _chord(String key, String word) {
+    return Text.rich(
+      TextSpan(children: [
+        TextSpan(
+          text: key,
+          style: AppFonts.inter(
+            fontSize: 10.5,
+            fontWeight: FontWeight.w700,
+            color: Colors.white.withValues(alpha: 0.30),
+            letterSpacing: 0.5,
+          ),
+        ),
+        TextSpan(
+          text: '  $word',
+          style: AppFonts.inter(
+            fontSize: 10.5,
+            color: Colors.white.withValues(alpha: 0.17),
+            letterSpacing: 0.3,
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _dot() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Text('·',
+          style: AppFonts.inter(
+            fontSize: 10.5,
+            color: Colors.white.withValues(alpha: 0.12),
+          )),
+    );
+  }
+}

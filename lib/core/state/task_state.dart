@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,6 +6,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../engine/capture_destination.dart';
 import '../engine/slate_core_bridge.dart';
+import 'first_run.dart';
+import 'local_prefs.dart';
 
 final taskStateProvider = ChangeNotifierProvider<TaskState>((ref) => TaskState());
 
@@ -123,6 +126,11 @@ class TaskState extends ChangeNotifier {
     if (count >= 0) {
       // Hydrate Dart's local mirror from Rust store
       _tasks = core.getAllTasks();
+      // Not under `flutter test`: the 19+ existing tests build their own
+      // fixtures and must never find demo tasks in frame.
+      if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+        await maybeSeedDemo();
+      }
       _loaded = true;
       debugPrint('✓ TaskState: Engine ready with $count tasks from local DB');
     } else {
@@ -134,6 +142,70 @@ class TaskState extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  /// First-launch demo set — real engine tasks (FFI), deletable like any task.
+  /// Seeded ONCE (slate_seeded), only into a truly empty store, and muted so
+  /// seeding never counts as the user's first capture. All carry #demo so the
+  /// tray's "Clear sample tasks" can find them later.
+  @visibleForTesting
+  Future<void> maybeSeedDemo() async {
+    final prefs = await LocalPrefs.load();
+    if (prefs.onboarded || prefs.seeded || core.getTaskCount() > 0) return;
+    FirstRunController.instance.muted = true;
+    try {
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final anchor = now.hour.clamp(8, 17); // keep demo times inside the day
+      const tags = ['demo'];
+      void timed(String title, DateTime day, int start, int end,
+          {int priority = 0}) {
+        core.createTaskEx(
+          title: title,
+          dayTs: day.millisecondsSinceEpoch,
+          startTime: start,
+          endTime: end,
+          priority: priority,
+          tags: tags,
+        );
+      }
+
+      timed('Check me off — it feels good', today, (anchor + 1) * 60,
+          (anchor + 1) * 60 + 45, priority: 2);
+      timed('Drag me along the timeline', today, (anchor + 2) * 60 + 30,
+          (anchor + 3) * 60 + 30);
+      timed('Stretch me — pull my right edge', today, (anchor + 4) * 60,
+          (anchor + 5) * 60);
+      core.createTaskEx(
+        title: 'Drop me onto the timeline',
+        dayTs: today.millisecondsSinceEpoch,
+        tags: tags,
+      );
+      timed('Tomorrow has room too',
+          DateTime(now.year, now.month, now.day + 1), 9 * 60, 9 * 60 + 45);
+      for (final thought in [
+        'Ideas wait here — no day needed',
+        'Drag a thought onto any day',
+      ]) {
+        final t = core.createInboxTask(
+            thought, DateTime.now().millisecondsSinceEpoch);
+        core.updateTaskInStore(t.copyWith(tags: tags));
+      }
+      prefs.seeded = true;
+      _tasks = core.getAllTasks();
+    } finally {
+      FirstRunController.instance.muted = false;
+    }
+  }
+
+  /// Tray action: remove every #demo sample in one sweep.
+  void clearDemoTasks() {
+    final demos = _tasks.where((t) => t.tags.contains('demo')).toList();
+    if (demos.isEmpty) return;
+    for (final t in demos) {
+      core.removeTaskFromStore(t.id);
+    }
+    refreshFromStore();
   }
 
   /// Resolve the SQLite database file path.
@@ -164,6 +236,11 @@ class TaskState extends ChangeNotifier {
     _invalidateTaskCaches(newTask);
     _bumpTick();
     notifyListeners();
+    final now = DateTime.now();
+    final day = DateTime.fromMillisecondsSinceEpoch(targetTs);
+    FirstRunController.instance.recordCapture(dayLabel(
+        DateTime(day.year, day.month, day.day),
+        DateTime(now.year, now.month, now.day)));
     // No Supabase call — Rust sync worker handles it
   }
 
@@ -185,6 +262,7 @@ class TaskState extends ChangeNotifier {
     _invalidateTaskCaches(newTask);
     _bumpTick();
     notifyListeners();
+    FirstRunController.instance.recordCapture('Inbox');
   }
 
   /// Phase 5: Create a task with full NLP-parsed metadata via ffi_create_task_ex.
@@ -230,6 +308,7 @@ class TaskState extends ChangeNotifier {
     _invalidateTaskCaches(newTask);
     _bumpTick();
     notifyListeners();
+    FirstRunController.instance.recordCapture(dest.label);
   }
 
   /// Update an existing task.

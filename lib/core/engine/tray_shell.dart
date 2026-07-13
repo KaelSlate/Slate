@@ -6,6 +6,7 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import '../state/local_prefs.dart';
+import '../state/task_state.dart';
 import 'quick_capture_controller.dart';
 import 'slate_core_bridge.dart';
 
@@ -21,6 +22,9 @@ class TrayShell with TrayListener {
   /// Runner-to-Dart requests. "quitRequested" = a newer instance is taking
   /// over (single-instance handover in main.cpp) — flush and die quietly.
   static const _shell = MethodChannel('slate/shell');
+
+  /// Injected from main() so tray actions can mutate + notify the live UI.
+  TaskState? taskState;
 
   Future<void> init() async {
     _shell.setMethodCallHandler((call) async {
@@ -60,6 +64,9 @@ class TrayShell with TrayListener {
   }
 
   Future<void> _rebuildMenu() async {
+    // First-run demo tasks still around → offer a one-click sweep.
+    final hasDemo =
+        taskState?.tasks.any((t) => t.tags.contains('demo')) ?? false;
     await trayManager.setContextMenu(Menu(items: [
       MenuItem(key: 'open', label: 'Open Slate'),
       MenuItem(
@@ -67,6 +74,7 @@ class TrayShell with TrayListener {
           label:
               'Quick Capture (${QuickCaptureController.instance.hotkeyLabel})'),
       MenuItem.separator(),
+      if (hasDemo) MenuItem(key: 'clear_demo', label: 'Clear sample tasks'),
       MenuItem.checkbox(
         key: 'autostart',
         label: 'Launch at startup',
@@ -105,7 +113,10 @@ class TrayShell with TrayListener {
   void onTrayIconMouseDown() => openApp();
 
   @override
-  void onTrayIconRightMouseDown() => trayManager.popUpContextMenu();
+  void onTrayIconRightMouseDown() async {
+    await _rebuildMenu(); // live items (sample sweep) reflect current state
+    await trayManager.popUpContextMenu();
+  }
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) async {
@@ -114,6 +125,9 @@ class TrayShell with TrayListener {
         await openApp();
       case 'capture':
         await QuickCaptureController.instance.summon();
+      case 'clear_demo':
+        taskState?.clearDemoTasks();
+        await _rebuildMenu();
       case 'autostart':
         final next = !LocalPrefs.instance.autostart;
         LocalPrefs.instance.autostart = next;

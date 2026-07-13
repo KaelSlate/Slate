@@ -7,8 +7,10 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/engine/capture_destination.dart';
+import '../../core/engine/quick_capture_controller.dart';
 import '../../core/engine/slate_core_bridge.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
+import '../../core/state/first_run.dart';
 import '../../core/state/task_state.dart';
 import '../../core/interaction/drag_session.dart';
 import '../../core/interaction/timeline_math.dart';
@@ -938,6 +940,25 @@ class _DayFlowViewState extends State<DayFlowView>
                 const TextSpan(text: ' to add a task'),
               ],
             ),
+          ),
+          // First-run only: tie the empty day back to the one real lesson —
+          // the global hotkey. Fades out forever at the first capture.
+          ValueListenableBuilder<bool>(
+            valueListenable: FirstRunController.instance.hintsActive,
+            builder: (context, active, _) => !active
+                ? const SizedBox.shrink()
+                : Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'or ${QuickCaptureController.instance.hotkeyLabel} — from anywhere',
+                      textAlign: TextAlign.center,
+                      style: AppFonts.inter(
+                        fontSize: 10,
+                        color: Colors.white.withOpacity(0.14),
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
           ),
           const SizedBox(height: 40),
         ],

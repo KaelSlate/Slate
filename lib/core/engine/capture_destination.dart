@@ -66,13 +66,13 @@ CaptureDestination resolveCapture(ParseResult r, DateTime now, {DateTime? viewed
 }
 
 String _label(DateTime day, DateTime today, ParseResult r) {
-  final String d;
-  if (day == today) {
-    d = 'Today';
-  } else if (day == today.add(const Duration(days: 1))) {
-    d = 'Tomorrow';
-  } else {
-    d = '${_weekdays[day.weekday - 1]} · ${_months[day.month - 1]} ${day.day}';
-  }
+  final d = dayLabel(day, today);
   return r.hasTime ? '$d ${r.startTimeFormatted}' : d;
+}
+
+/// Human label for a landing day ("Today" / "Tomorrow" / "Mon · Jul 14").
+String dayLabel(DateTime day, DateTime today) {
+  if (day == today) return 'Today';
+  if (day == today.add(const Duration(days: 1))) return 'Tomorrow';
+  return '${_weekdays[day.weekday - 1]} · ${_months[day.month - 1]} ${day.day}';
 }

@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 import 'core/engine/quick_capture_controller.dart';
 import 'core/engine/spatial_zoom_engine.dart';
 import 'core/engine/tray_shell.dart';
+import 'core/state/first_run.dart';
 import 'core/state/local_prefs.dart';
 import 'core/state/task_state.dart';
 import 'core/theme/app_theme.dart';
@@ -93,6 +94,7 @@ void main(List<String> args) async {
 
   // Global quick capture hotkey + tray residency + launch-at-login.
   await QuickCaptureController.instance.init();
+  TrayShell.instance.taskState = container.read(taskStateProvider);
   await TrayShell.instance.init();
 
   // Launch view (#1): default to WEEK, but reopen in MONTH if that's the view you
@@ -107,9 +109,11 @@ void main(List<String> args) async {
     StaircaseState.currentLevel = StaircaseLevel.weekTactics;
   }
 
-  // First-run onboarding flags (greeting removed — these only gate other niceties).
+  // First-run onboarding: welcome overlay until the first capture completes
+  // the arc; quiet C/V/I hints until the same moment (see FirstRunController).
   StaircaseState.isFirstRun = !prefs.onboarded;
   StaircaseState.showWelcome = !prefs.welcomed;
+  FirstRunController.instance.syncFromPrefs();
 
   await fontsWarm; // ensure glyph metrics are ready before the first frame
   runApp(UncontrolledProviderScope(container: container, child: const SlateApp()));
