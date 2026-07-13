@@ -8,6 +8,7 @@ import '../engine/capture_destination.dart';
 import '../engine/slate_core_bridge.dart';
 import 'first_run.dart';
 import 'local_prefs.dart';
+import 'toast_bus.dart';
 
 final taskStateProvider = ChangeNotifierProvider<TaskState>((ref) => TaskState());
 
@@ -372,6 +373,7 @@ class TaskState extends ChangeNotifier {
     final toggled = core.toggleTask(task);
     final idx = _tasks.indexWhere((t) => t.id == task.id);
     if (idx != -1) _tasks[idx] = toggled;
+    _pushUndo(_UndoEntry.toggle(task.id));
     _invalidateTaskCaches(toggled);
     _bumpTick();
     notifyListeners();
@@ -379,14 +381,86 @@ class TaskState extends ChangeNotifier {
   }
 
   /// Delete a task. Rust soft-deletes in SQLite + queues sync.
+  /// The full snapshot goes on the undo stack — Ctrl+Z rebuilds every field.
   void deleteTask(RustTask task) {
     _tasks.removeWhere((t) => t.id == task.id);
     core.removeTaskFromStore(task.id);
+    _pushUndo(_UndoEntry.delete(task));
     _invalidateTaskCaches(task);
     _bumpTick();
     notifyListeners();
+    // Deletion is the scary one — teach the escape hatch right when it counts.
+    SlateToasts.instance.show('Deleted',
+        detail: 'Ctrl+Z to undo', onTap: () => undoLast());
     // No Supabase call — Rust sync worker handles it
   }
+
+  // ── Undo (checkbox + delete, Ctrl+Z) ──────────────────────────────────────
+  // Trust = a slip costs nothing. Toggle undo re-toggles by id; delete undo
+  // recreates from the snapshot through the existing FFI path (new id, every
+  // field restored: day, times, tags, inbox, done, priority).
+
+  final List<_UndoEntry> _undoStack = [];
+  bool _undoing = false;
+  static const _undoDepth = 50;
+
+  void _pushUndo(_UndoEntry entry) {
+    if (_undoing) return; // an undo must not become its own next undo
+    _undoStack.add(entry);
+    if (_undoStack.length > _undoDepth) _undoStack.removeAt(0);
+  }
+
+  /// Undo the most recent toggle/delete. Returns a short human description
+  /// of what came back, or null if there was nothing (or nothing valid) left.
+  String? undoLast() {
+    _undoing = true;
+    try {
+      while (_undoStack.isNotEmpty) {
+        final entry = _undoStack.removeLast();
+        if (entry.snapshot != null) {
+          final t = _restoreDeleted(entry.snapshot!);
+          return '“${_ellipsize(t.title)}” is back';
+        }
+        // Toggle: the task may have been deleted since — skip to older entries.
+        final idx = _tasks.indexWhere((t) => t.id == entry.taskId);
+        if (idx == -1) continue;
+        toggleTask(_tasks[idx]);
+        return _tasks[idx].isCompleted ? 'checked again' : 'check removed';
+      }
+      return null;
+    } finally {
+      _undoing = false;
+    }
+  }
+
+  RustTask _restoreDeleted(RustTask s) {
+    RustTask restored;
+    if (s.isInbox) {
+      restored = core.createInboxTask(s.title, s.createdAt);
+      if (s.priority != 0 || s.tags.isNotEmpty) {
+        restored = restored.copyWith(priority: s.priority, tags: s.tags);
+        core.updateTaskInStore(restored);
+      }
+    } else {
+      restored = core.createTaskEx(
+        title: s.title,
+        dayTs: s.createdAt,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        priority: s.priority,
+        tags: s.tags,
+      );
+    }
+    if (s.isCompleted) restored = core.toggleTask(restored);
+    _tasks.insert(0, restored);
+    _invalidateTaskCaches(restored);
+    _bumpTick();
+    notifyListeners();
+    return restored;
+  }
+
+  static String _ellipsize(String s) =>
+      s.length <= 32 ? s : '${s.substring(0, 31)}…';
 
   /// Refresh the Dart mirror from Rust store.
   /// Useful after sync worker has merged remote changes.
@@ -426,4 +500,14 @@ class TaskState extends ChangeNotifier {
       entry.value.value = core.tasksForHour(int.parse(parts[0]), int.parse(parts[1]));
     }
   }
+}
+
+/// One undoable mutation: a toggle (by id) or a delete (full snapshot).
+class _UndoEntry {
+  final String taskId;
+  final RustTask? snapshot;
+  _UndoEntry.toggle(this.taskId) : snapshot = null;
+  _UndoEntry.delete(RustTask task)
+      : taskId = task.id,
+        snapshot = task;
 }

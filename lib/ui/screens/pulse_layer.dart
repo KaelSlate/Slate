@@ -13,6 +13,7 @@ import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/interaction/drag_session.dart';
 import '../../core/state/first_run.dart';
 import '../../core/state/task_state.dart';
+import '../../core/state/toast_bus.dart';
 // year_strategy_view.dart removed — Phase 3 3-layer hierarchy
 import '../views/month_grid_view.dart';
 import '../views/week_tactics_view.dart' show WeekTacticsView, WeekTacticsViewState;
@@ -22,6 +23,7 @@ import '../overlays/task_peek_layer.dart';
 import '../overlays/inbox_drawer.dart';
 import '../overlays/welcome_overlay.dart';
 import '../warmup/warmup_layer.dart';
+import '../widgets/slate_toast.dart';
 
 /// Slate — Pulse Layer
 /// Minimal header: SLATE + level + New + Settings.
@@ -221,6 +223,22 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     final noModifiers = !HardwareKeyboard.instance.isControlPressed &&
         !HardwareKeyboard.instance.isMetaPressed &&
         !HardwareKeyboard.instance.isAltPressed;
+
+    // ── Ctrl+Z — undo the last checkbox toggle / delete ────────────────────
+    // (Shift left free for a future redo; text fields keep their own Ctrl+Z.)
+    if (event.logicalKey == LogicalKeyboardKey.keyZ &&
+        HardwareKeyboard.instance.isControlPressed &&
+        !HardwareKeyboard.instance.isAltPressed &&
+        !HardwareKeyboard.instance.isShiftPressed) {
+      if (_isTextFieldFocused()) return false;
+      final undone = _taskState?.undoLast();
+      SlateToasts.instance.show(
+        undone != null ? 'Undone' : 'Nothing to undo',
+        detail: undone,
+        icon: Icons.undo_rounded,
+      );
+      return true;
+    }
 
     // ── 'C' — capture from WEEK/MONTH too (day view opens its own pill) ──
     // Same summon as the global hotkey, so the "C — capture" hint is honest
@@ -617,6 +635,8 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
             // forever at the first capture.
             if (StaircaseState.currentLevel != StaircaseLevel.day)
               const _FirstRunHints(),
+            // Calm self-dismissing toasts (undo etc.) — above the drawer.
+            const SlateToastLayer(),
             // First-run welcome — teaches the one hotkey, confirms the first
             // capture, then never returns.
             if (_welcomeActive && _warmupPhase == _WarmupPhase.done)
