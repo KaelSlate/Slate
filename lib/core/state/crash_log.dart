@@ -13,6 +13,29 @@ class CrashLog {
   static final List<String> _pending = [];
   static const _maxBytes = 512 * 1024;
 
+  static final List<String> _trace = [];
+  static const _traceCap = 400;
+
+  /// In-memory breadcrumbs (window morph, foreground handoffs). Zero I/O on
+  /// the hot path; dumped into crash records and by "Report a problem".
+  static void trace(String msg) {
+    _trace.add('${DateTime.now().toIso8601String()} $msg');
+    if (_trace.length > _traceCap) _trace.removeAt(0);
+  }
+
+  /// Snapshot for "Report a problem" — slate_trace.txt next to the log.
+  static String? dumpTrace() {
+    final dir = _dir;
+    if (dir == null) return null;
+    try {
+      final f = File('${dir.path}\\slate_trace.txt');
+      f.writeAsStringSync('${_trace.join('\n')}\n', flush: true);
+      return f.path;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static void init(Directory logsDir) {
     _dir = logsDir;
     try {
@@ -33,8 +56,14 @@ class CrashLog {
       ..writeln('──── ${DateTime.now().toIso8601String()} '
           '· Slate v$kAppVersion · $source')
       ..writeln(error)
-      ..writeln(stack ?? StackTrace.current)
-      ..writeln();
+      ..writeln(stack ?? StackTrace.current);
+    if (_trace.isNotEmpty) {
+      entry.writeln('· trace tail:');
+      _trace
+          .skip(_trace.length <= 40 ? 0 : _trace.length - 40)
+          .forEach(entry.writeln);
+    }
+    entry.writeln();
     final s = entry.toString();
     if (_dir == null) {
       _pending.add(s);

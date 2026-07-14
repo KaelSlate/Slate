@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:window_manager/window_manager.dart';
+import '../state/crash_log.dart';
 import '../theme/app_theme.dart';
 import 'spatial_zoom_engine.dart';
 
@@ -308,11 +309,13 @@ class QuickCaptureController with WindowListener {
           (now.left - target.left).abs() < 2 &&
           (now.width - target.width).abs() < 2 &&
           (now.height - target.height).abs() < 2) {
+        if (i > 0) CrashLog.trace('assertRect: landed after $i reassert(s)');
         return;
       }
       _setWindowRect(target);
       await _pumpFrames(1);
     }
+    CrashLog.trace('assertRect: FAILED $target now=${_windowRect()}');
   }
 
   /// Plugin setAlwaysOnTop omits SWP_NOACTIVATE, which ACTIVATES the (hidden)
@@ -595,6 +598,10 @@ class QuickCaptureController with WindowListener {
       // ghost at the window's old spot — visually the app stays put while
       // the real window becomes the pill. The ghost keeps MainScreen's
       // shortcut surface alive, so mute it exactly like in-app capture does.
+      CrashLog.trace('summon: vis=$_priorVisible min=$_priorMinimized '
+          'zoom=$_priorZoomed focus=$_priorFocused '
+          'prior=$_priorRect target=$target');
+
       final showGhost = _priorFocused && !_priorMinimized && !_priorZoomed;
       ghostRect = showGhost ? _priorRect : null;
       // Otherwise: MainScreen unmounts during the morph; a stale modal flag
@@ -614,8 +621,10 @@ class QuickCaptureController with WindowListener {
         _morphWindow(target, insertAfter: _kHwndTopmost);
         final swpUs = sw.elapsedMicroseconds;
         await _pumpFrames(1);
-        debugPrint('morph[in]: swp=${swpUs}us frame=${frameUs}us '
-            'atomic=${frameUs >= 0 && frameUs <= swpUs}');
+        final inMsg = 'morph[in]: swp=${swpUs}us frame=${frameUs}us '
+            'atomic=${frameUs >= 0 && frameUs <= swpUs}';
+        debugPrint(inMsg);
+        CrashLog.trace(inMsg);
         await _assertRect(target);
         await windowManager.focus();
         return;
@@ -654,6 +663,14 @@ class QuickCaptureController with WindowListener {
       _setWindowRect(target); // last word on geometry, right before reveal
       await windowManager.setOpacity(1.0);
       await windowManager.focus();
+    } catch (e) {
+      CrashLog.trace('summon failed: $e');
+      // Scene never came up → the window is back to normal use; a lifted
+      // minimum must not outlive the morph.
+      if (!overlayMode.value) {
+        unawaited(windowManager.setMinimumSize(const Size(900, 600)));
+      }
+      rethrow;
     } finally {
       _busy = false;
     }
@@ -679,6 +696,8 @@ class QuickCaptureController with WindowListener {
     try {
       await _releaseDismissKeys();
       final prior = _priorRect;
+      CrashLog.trace('restore: vis=$_priorVisible min=$_priorMinimized '
+          'zoom=$_priorZoomed focus=$_priorFocused prior=$prior');
 
       if (_priorVisible && !_priorMinimized && prior != null) {
         // Visible window: ATOMIC reverse morph — the same single-SetWindowPos
@@ -693,8 +712,13 @@ class QuickCaptureController with WindowListener {
         if (_priorZoomed) {
           // Re-maximize + rcNormal in ONE SetWindowPlacement (SetWindowPos
           // is swallowed by zoomed windows). SW_SHOWMAXIMIZED activates —
-          // a no-op right now: the pill IS the foreground. Then back under
-          // the prior app, ONE yield.
+          // a no-op right now: the pill IS the foreground. But it also
+          // RAISES: for a behind-prior that is a full-screen Slate frame
+          // above the user's app (the S4 flash) — so the behind case runs
+          // the whole dance at alpha 0 and reveals only after sinking
+          // below the anchor.
+          final behind = !_priorFocused;
+          if (behind) await windowManager.setOpacity(0.0);
           overlayMode.value = false; // dirty; placement's resize presents it
           _placementSet(prior,
               showCmd: _kSwShowMaximized, restoreToMax: false);
@@ -708,6 +732,7 @@ class QuickCaptureController with WindowListener {
           await Window.setEffect(
               effect: WindowEffect.disabled, color: AppTheme.background);
           await windowManager.setBackgroundColor(AppTheme.background);
+          if (behind) await windowManager.setOpacity(1.0);
           await windowManager.setMinimumSize(const Size(900, 600));
           return;
         }
@@ -725,8 +750,10 @@ class QuickCaptureController with WindowListener {
             insertAfter: anchor != 0 ? anchor : _kHwndNoTopmost);
         final swpUs = sw.elapsedMicroseconds;
         await _pumpFrames(1);
-        debugPrint('morph[out]: swp=${swpUs}us frame=${frameUs}us '
-            'atomic=${frameUs >= 0 && frameUs <= swpUs}');
+        final outMsg = 'morph[out]: swp=${swpUs}us frame=${frameUs}us '
+            'atomic=${frameUs >= 0 && frameUs <= swpUs}';
+        debugPrint(outMsg);
+        CrashLog.trace(outMsg);
         // Inserting after a plain window clears TOPMOST per SetWindowPos
         // rules — belt in case the OS kept it.
         if (_isTopmost()) {
@@ -807,10 +834,11 @@ class QuickCaptureController with WindowListener {
       debugPrint('quick capture: restore failed: $e');
     } finally {
       // Safety net — a mid-flight failure must NEVER leave the window
-      // cloaked (present in the taskbar but INVISIBLE in Alt+Tab) or
-      // animation-less. All idempotent.
+      // cloaked (present in the taskbar but INVISIBLE in Alt+Tab),
+      // animation-less, or with the 900x600 minimum lifted. All idempotent.
       _cloaked(false);
       _transitionsDisabled(false);
+      unawaited(windowManager.setMinimumSize(const Size(900, 600)));
       ghostRect = null;
       StaircaseState.isComposingTask = false;
       _busy = false;
@@ -830,6 +858,12 @@ class QuickCaptureController with WindowListener {
     _transitionsDisabled(false);
     await windowManager.setOpacity(1.0);
   }
+
+  bool get windowIsForeground => _winGetForegroundWindow() == _windowHandle;
+
+  /// A morph (summon or restore) is mid-flight. openApp waits this out —
+  /// interleaving its show/focus with the restore tail races window state.
+  bool get busy => _busy;
 
   /// Present [n] frames; time-boxed so a stalled pump can never wedge the
   /// window machinery.
