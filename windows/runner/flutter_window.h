@@ -41,6 +41,10 @@ class FlutterWindow : public Win32Window {
 
   // "Quit, a newer instance is taking over" (see main.cpp).
   UINT quit_handover_msg_ = 0;
+
+  // External "open the app" request — drives the same Dart path as a tray
+  // click (openApp). Used by the e2e harness; tray clicks aren't scriptable.
+  UINT show_request_msg_ = 0;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

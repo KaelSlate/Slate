@@ -136,6 +136,7 @@ bool FlutterWindow::OnCreate() {
       reinterpret_cast<LONG_PTR>(FlutterViewSubclassProc)));
 
   quit_handover_msg_ = ::RegisterWindowMessageW(L"Slate.QuitForHandover");
+  show_request_msg_ = ::RegisterWindowMessageW(L"Slate.ShowRequested");
   shell_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "slate/shell",
@@ -196,6 +197,13 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     // tray icon removal), never TerminateProcess.
     if (shell_channel_) {
       shell_channel_->InvokeMethod("quitRequested", nullptr);
+    }
+    return 0;
+  }
+
+  if (message == show_request_msg_ && show_request_msg_ != 0) {
+    if (shell_channel_) {
+      shell_channel_->InvokeMethod("showRequested", nullptr);
     }
     return 0;
   }
