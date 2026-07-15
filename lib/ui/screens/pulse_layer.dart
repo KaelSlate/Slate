@@ -961,22 +961,31 @@ class _WindowControlsState extends State<_WindowControls> with WindowListener {
     if (mounted) setState(() => _isMaximized = false);
   }
 
-  // The quick-capture morph un/re-maximizes the window with native Win32
-  // calls that bypass window_manager, so onWindowMaximize/Unmaximize never
-  // fire for it — the button icon desynced (showed "maximize" over a
-  // genuinely maximized window; a click then ran restore). Re-read the real
-  // state whenever the window regains focus or is restored, which always
-  // follows a morph or a tray open.
+  // The plugin's maximize/unmaximize events miss some transitions — notably
+  // minimize-FROM-maximized then restore (Alt+Tab back): the window comes back
+  // maximized but onWindowRestore can fire mid-transition, when isMaximized()
+  // still reads false, leaving the button showing "maximize" over a genuinely
+  // maximized window (a click then runs restore). So re-read the REAL Win32
+  // state on every settling event — focus, restore, and resize — plus one
+  // delayed recheck to beat that mid-transition race.
   Future<void> _resyncMaximized() async {
     final real = await windowManager.isMaximized();
     if (mounted && real != _isMaximized) setState(() => _isMaximized = real);
   }
 
-  @override
-  void onWindowFocus() => _resyncMaximized();
+  void _resyncMaximizedSoon() {
+    _resyncMaximized();
+    Future.delayed(const Duration(milliseconds: 120), _resyncMaximized);
+  }
 
   @override
-  void onWindowRestore() => _resyncMaximized();
+  void onWindowFocus() => _resyncMaximizedSoon();
+
+  @override
+  void onWindowRestore() => _resyncMaximizedSoon();
+
+  @override
+  void onWindowResize() => _resyncMaximized();
 
   @override
   Widget build(BuildContext context) {

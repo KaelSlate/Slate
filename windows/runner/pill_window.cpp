@@ -1,8 +1,8 @@
 #include "pill_window.h"
 
-#include <optional>
+#include <flutter_acrylic/flutter_acrylic_plugin.h>
 
-#include "flutter/generated_plugin_registrant.h"
+#include <optional>
 
 PillWindow::PillWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -20,7 +20,13 @@ bool PillWindow::OnCreate() {
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
     return false;
   }
-  RegisterPlugins(flutter_controller_->engine());
+  // ONLY flutter_acrylic (the transparent window effect). Registering the
+  // main-owned plugins here too — tray_manager especially — gave the process a
+  // second tray_manager that fought the main one for the icon's messages, so
+  // the tray icon stopped responding to clicks. The pill needs none of them.
+  FlutterAcrylicPluginRegisterWithRegistrar(
+      flutter_controller_->engine()->GetRegistrarForPlugin(
+          "FlutterAcrylicPlugin"));
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
