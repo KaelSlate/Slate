@@ -171,6 +171,9 @@ class QuickCaptureController with WindowListener {
   /// true → capture scene stacked over MainScreen (window untouched).
   final ValueNotifier<bool> inAppCapture = ValueNotifier(false);
 
+  /// Runner channel — the capture hotkey raises the separate pill window.
+  static const _shellChannel = MethodChannel('slate/shell');
+
   /// Bumped when the capture scene must play its exit (blur, repeat hotkey).
   final ValueNotifier<int> dismissTick = ValueNotifier(0);
 
@@ -504,7 +507,9 @@ class QuickCaptureController with WindowListener {
       }
       await hotKeyManager.register(
         HotKey(key: c.key, modifiers: c.modifiers, scope: HotKeyScope.system),
-        keyDownHandler: (_) => summon(),
+        // Separate pill window: the runner raises it instantly. No morph of the
+        // main window (that whole path — summon/_coldMorph/ghost — is retired).
+        keyDownHandler: (_) => _shellChannel.invokeMethod('showPill'),
       );
       hotkeyLabel = c.label;
       debugPrint('quick capture: registered ${c.label}');

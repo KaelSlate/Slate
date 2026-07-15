@@ -5,6 +5,7 @@
 #include <flutter/flutter_view_controller.h>
 #include <flutter/method_channel.h>
 
+#include <functional>
 #include <memory>
 
 #include "win32_window.h"
@@ -18,6 +19,15 @@ class FlutterWindow : public Win32Window {
   explicit FlutterWindow(const flutter::DartProject& project,
                          bool start_hidden = false);
   virtual ~FlutterWindow();
+
+  // The main isolate's hotkey asks (over slate/shell) to raise the separate
+  // pill window; main() wires this to PillWindow::ShowPill.
+  void SetShowPillCallback(std::function<void()> cb) {
+    show_pill_cb_ = std::move(cb);
+  }
+  // A submitted capture from the pill window is delivered to the MAIN isolate
+  // (one engine, one DB) as `pillCapture` on slate/shell.
+  void SendCapture(const flutter::EncodableValue& value);
 
  protected:
   // Win32Window:
@@ -45,6 +55,9 @@ class FlutterWindow : public Win32Window {
   // External "open the app" request — drives the same Dart path as a tray
   // click (openApp). Used by the e2e harness; tray clicks aren't scriptable.
   UINT show_request_msg_ = 0;
+
+  // Raises the separate pill window (wired to PillWindow::ShowPill in main()).
+  std::function<void()> show_pill_cb_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

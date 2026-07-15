@@ -1,16 +1,32 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_acrylic/flutter_acrylic.dart';
-import 'core/theme/app_theme.dart';
+import 'dart:math' as math;
 
-/// Entry for the SEPARATE pill window (runner launches a second Flutter engine
-/// with the `--pill` entrypoint arg). This window is the global capture pill and
-/// NOTHING else — the main app window is never touched, so none of the round 1-8
-/// morph fragility (cold swapchain, jerk, maximize desync, taskbar flash) can
-/// happen. Phase 1 = prove a borderless topmost window + blur render on Windows;
-/// live parsing + capture + main-window refresh land in later phases.
+import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_acrylic/flutter_acrylic.dart';
+import 'core/engine/capture_destination.dart';
+import 'core/engine/slate_core_bridge.dart';
+import 'core/theme/app_theme.dart';
+import 'ui/widgets/smart_day_input.dart';
+
+/// Entry for the SEPARATE pill window — a second Flutter engine the runner
+/// launches with `--pill`. It is the global capture pill and NOTHING else, so
+/// the main app window is never morphed (no cold swapchain, no jerk, no
+/// maximize desync, no taskbar flash — the whole rounds 1-8 class is gone).
+///
+/// Native <-> pill talk over the `slate/pill` channel:
+///   native -> dart : `reveal`  (window just shown → clear + play entrance + focus)
+///   dart -> native : `capture` (serialized ParseResult → main isolate creates it)
+///                    `dismiss` (hide the window, hand focus back)
+const _channel = MethodChannel('slate/pill');
+
 Future<void> runPillWindow() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Window.initialize();
+  // Per-pixel transparent window: only the scrim + pill paint, everything else
+  // is see-through — the Spotlight look, no black box.
+  await Window.setEffect(
+      effect: WindowEffect.transparent, color: Colors.transparent);
   runApp(const _PillApp());
 }
 
@@ -24,40 +40,186 @@ class _PillApp extends StatelessWidget {
       theme: AppTheme.darkTheme,
       home: const Scaffold(
         backgroundColor: Colors.transparent,
-        body: Center(
-          child: SizedBox(
-            width: 600,
-            height: 57,
-            child: _PillShell(),
-          ),
-        ),
+        body: _PillScene(),
       ),
     );
   }
 }
 
-/// Placeholder body — the real SmartDayInput moves in once the window plumbing
-/// (Phase 2/3) is proven. Kept visually close so the spike shows the true look.
-class _PillShell extends StatelessWidget {
-  const _PillShell();
+class _PillScene extends StatefulWidget {
+  const _PillScene();
+
+  @override
+  State<_PillScene> createState() => _PillSceneState();
+}
+
+class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
+  final FocusNode _focusNode = FocusNode();
+  final SmartInputNotifier _notifier = SmartInputNotifier();
+  final SlateCore _core = SlateCore(); // parse only — no engine/DB in this isolate
+  late final AnimationController _enter;
+  late final AnimationController _exit;
+  bool _leaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _enter = AnimationController(vsync: this, lowerBound: 0.0, upperBound: 1.2);
+    _exit = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 170));
+    _channel.setMethodCallHandler(_onNative);
+    HardwareKeyboard.instance.addHandler(_keyHandler);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_keyHandler);
+    _enter.dispose();
+    _exit.dispose();
+    _focusNode.dispose();
+    _notifier.dispose();
+    super.dispose();
+  }
+
+  Future<dynamic> _onNative(MethodCall call) async {
+    if (call.method == 'reveal') _reveal();
+    return null;
+  }
+
+  /// Window was just shown by the runner: reset to a clean pill and play the
+  /// entrance spring from zero, on screen.
+  void _reveal() {
+    _leaving = false;
+    _notifier.clear();
+    _exit.value = 0.0;
+    _enter.value = 0.0;
+    _enter.animateWith(SpringSimulation(
+      SpringDescription(
+          mass: 1.0,
+          stiffness: 420.0,
+          damping: 2 * 0.86 * math.sqrt(420.0)),
+      0.0,
+      1.0,
+      0.0,
+    ));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusNode.requestFocus();
+    });
+  }
+
+  bool _keyHandler(KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape) {
+      _dismiss();
+      return true;
+    }
+    return false;
+  }
+
+  void _onSubmit(String cleanTitle, ParseResult result) {
+    // The DB write lives in the MAIN isolate (one engine, one DB). Ship the
+    // parsed fields; main reconstructs ParseResult and creates + refreshes.
+    _channel.invokeMethod('capture', <String, dynamic>{
+      'cleanTitle': cleanTitle,
+      'startTime': result.startTime,
+      'endTime': result.endTime,
+      'priority': result.priority,
+      'tags': result.tags,
+      'dateKind': result.dateKind,
+      'dateA': result.dateA,
+      'dateB': result.dateB,
+      'dateC': result.dateC,
+    });
+    // Shift+Enter keeps the pill for a rapid dump; the widget already cleared
+    // + refocused. Plain Enter: let the submit pulse read, then dissolve.
+    if (HardwareKeyboard.instance.isShiftPressed) return;
+    Future.delayed(const Duration(milliseconds: 140), _dismiss);
+  }
+
+  Future<void> _dismiss() async {
+    if (_leaving) return;
+    _leaving = true;
+    _enter.stop();
+    await _exit.animateTo(1.0, curve: Curves.easeInCubic);
+    await _channel.invokeMethod('dismiss'); // runner hides the window
+  }
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: AppTheme.glassOpaqueBody,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: const [
-          BoxShadow(color: Colors.black54, blurRadius: 40, spreadRadius: 4),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _dismiss,
+      child: Stack(
+        children: [
+          // Whisper scrim over the desktop — focuses the eye on the pill, fades
+          // with the entrance/exit. Same weight as before.
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: Listenable.merge([_enter, _exit]),
+              builder: (context, _) {
+                final tc = _enter.value.clamp(0.0, 1.0);
+                return ColoredBox(
+                  color: Colors.black
+                      .withValues(alpha: 0.10 * tc * (1.0 - _exit.value)),
+                );
+              },
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 48,
+            child: Center(
+              child: SizedBox(
+                width: 600,
+                child: GestureDetector(
+                  onTap: () => _focusNode.requestFocus(),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.text,
+                    child: AnimatedBuilder(
+                      animation: Listenable.merge([_enter, _exit]),
+                      builder: (context, child) {
+                        final t = _enter.value;
+                        final tc = t.clamp(0.0, 1.0);
+                        final ex = _exit.value;
+                        final moving = _enter.isAnimating || _exit.isAnimating;
+                        final scaled = Transform(
+                          alignment: Alignment.center,
+                          transform: Matrix4.diagonal3Values(
+                            (0.55 + 0.45 * t) * (1 - 0.06 * ex),
+                            (0.90 + 0.10 * t) * (1 - 0.06 * ex),
+                            1.0,
+                          ),
+                          filterQuality: moving ? FilterQuality.low : null,
+                          child: child,
+                        );
+                        return Transform.translate(
+                          offset: Offset(0, (1 - tc) * 10 + ex * 6),
+                          child: Opacity(
+                            opacity: ((tc / 0.35).clamp(0.0, 1.0) * (1.0 - ex))
+                                .clamp(0.0, 1.0),
+                            child: scaled,
+                          ),
+                        );
+                      },
+                      child: SmartDayInputWidget(
+                        core: _core,
+                        focusNode: _focusNode,
+                        notifier: _notifier,
+                        floating: true,
+                        opaqueBackdrop: true,
+                        destinationLabel: (r) =>
+                            resolveCapture(r, DateTime.now()).label,
+                        onSubmit: _onSubmit,
+                        onDismiss: _dismiss,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
-      ),
-      child: const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 28),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: Text('Type a task…',
-              style: TextStyle(color: Colors.white54, fontSize: 17)),
-        ),
       ),
     );
   }

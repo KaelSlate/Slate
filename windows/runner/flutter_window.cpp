@@ -141,6 +141,17 @@ bool FlutterWindow::OnCreate() {
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "slate/shell",
           &flutter::StandardMethodCodec::GetInstance());
+  // The main isolate's capture hotkey raises the separate pill window through
+  // here (no more morphing this window).
+  shell_channel_->SetMethodCallHandler(
+      [this](const auto& call, auto result) {
+        if (call.method_name() == "showPill") {
+          if (show_pill_cb_) show_pill_cb_();
+          result->Success();
+        } else {
+          result->NotImplemented();
+        }
+      });
 
   // GENESIS 7.0 FIX: Show window IMMEDIATELY - don't wait for first frame
   // This ensures the window is visible even during shader compilation.
@@ -167,6 +178,14 @@ void FlutterWindow::OnDestroy() {
   }
 
   Win32Window::OnDestroy();
+}
+
+void FlutterWindow::SendCapture(const flutter::EncodableValue& value) {
+  if (shell_channel_) {
+    shell_channel_->InvokeMethod(
+        "pillCapture",
+        std::make_unique<flutter::EncodableValue>(value));
+  }
 }
 
 LRESULT
