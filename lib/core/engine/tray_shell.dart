@@ -168,7 +168,7 @@ class TrayShell with TrayListener {
       case 'open':
         await openApp();
       case 'capture':
-        await QuickCaptureController.instance.summon();
+        await _shell.invokeMethod('showPill'); // separate pill window, no morph
       case 'export':
         try {
           final file = await exportAllTasks(SlateCore());
