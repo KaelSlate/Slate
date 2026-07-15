@@ -41,6 +41,24 @@ class _QuickCaptureOverlayState extends ConsumerState<QuickCaptureOverlay>
     _enter = AnimationController(vsync: this, lowerBound: 0.0, upperBound: 1.2);
     _exit = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 170));
+    // Start the spring now. For a cold window this first run happens OFF-SCREEN
+    // during the morph's heal nudge — unseen, but its per-frame Transform is
+    // what forces the fresh paints that rebuild the swapchain. revealTick then
+    // RESETS + replays it the moment the pill lands on screen, so the user sees
+    // the whole spring from zero, never its tail. In-app / focused never reveal
+    // late, so their single run is the on-screen one.
+    _startEntrance();
+    QuickCaptureController.instance.revealTick.addListener(_startEntrance);
+    HardwareKeyboard.instance.addHandler(_keyHandler);
+    QuickCaptureController.instance.dismissTick.addListener(_dismiss);
+    // In-app: the pill is modal — pulse_layer/day_flow shortcuts stand down
+    // (same contract as the day pill).
+    if (widget.inApp) StaircaseState.isComposingTask = true;
+  }
+
+  void _startEntrance() {
+    if (!mounted || _leaving) return;
+    _enter.value = 0.0;
     _enter.animateWith(SpringSimulation(
       SpringDescription(
         mass: 1.0,
@@ -51,16 +69,12 @@ class _QuickCaptureOverlayState extends ConsumerState<QuickCaptureOverlay>
       1.0,
       0.0,
     ));
-    HardwareKeyboard.instance.addHandler(_keyHandler);
-    QuickCaptureController.instance.dismissTick.addListener(_dismiss);
-    // In-app: the pill is modal — pulse_layer/day_flow shortcuts stand down
-    // (same contract as the day pill).
-    if (widget.inApp) StaircaseState.isComposingTask = true;
   }
 
   @override
   void dispose() {
     if (widget.inApp) StaircaseState.isComposingTask = false;
+    QuickCaptureController.instance.revealTick.removeListener(_startEntrance);
     QuickCaptureController.instance.dismissTick.removeListener(_dismiss);
     HardwareKeyboard.instance.removeHandler(_keyHandler);
     _enter.dispose();

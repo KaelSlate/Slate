@@ -174,6 +174,10 @@ class QuickCaptureController with WindowListener {
   /// Bumped when the capture scene must play its exit (blur, repeat hotkey).
   final ValueNotifier<int> dismissTick = ValueNotifier(0);
 
+  /// Bumped the instant the pill is actually ON SCREEN, so its entrance spring
+  /// starts then — not while the window is still morphing/warming off-screen.
+  final ValueNotifier<int> revealTick = ValueNotifier(0);
+
   /// Human-readable registered chord — tray menu/tooltip show it.
   String hotkeyLabel = 'Alt+Space';
 
@@ -318,6 +322,11 @@ class QuickCaptureController with WindowListener {
     overlayMode.value = true;
     _placementSet(park, showCmd: _kSwShowNormalNoActivate, restoreToMax: false);
     await _assertRect(park); // forced off-screen even if placement clamps
+    // The heal needs FRESH paints presenting during the resize nudge. The
+    // pill's entrance animation is already running here (off-screen, unseen)
+    // and its per-frame Transform gives exactly those fresh paints — that is
+    // what rebuilds the swapchain. Then revealTick RESETS + replays the
+    // entrance on-screen so the user still sees the full spring, not its tail.
     await _pumpFrames(2);
     _morphWindow(parkNudge, insertAfter: _kHwndTopmost); // heal nudge, off-screen
     await _pumpFrames(2);
@@ -325,6 +334,7 @@ class QuickCaptureController with WindowListener {
     await _pumpFrames(2); // corrected surface presented out of sight
     _morphWindow(target, insertAfter: _kHwndTopmost); // pure move on-screen
     await _assertRect(target);
+    revealTick.value++; // replay the entrance now that the pill is on screen
     await _pumpFrames(1);
     await windowManager.focus();
   }
