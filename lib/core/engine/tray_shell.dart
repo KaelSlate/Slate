@@ -10,6 +10,7 @@ import '../state/crash_log.dart';
 import '../state/export_service.dart';
 import '../state/local_prefs.dart';
 import '../state/task_state.dart';
+import 'capture_destination.dart';
 import 'quick_capture_controller.dart';
 import 'slate_core_bridge.dart';
 
@@ -36,6 +37,8 @@ class TrayShell with TrayListener {
           await quit();
         case 'showRequested':
           await openApp();
+        case 'pillCapture':
+          _handlePillCapture(call.arguments);
       }
       return null;
     });
@@ -90,6 +93,27 @@ class TrayShell with TrayListener {
       MenuItem.separator(),
       MenuItem(key: 'quit', label: 'Quit Slate'),
     ]));
+  }
+
+  /// A capture submitted in the SEPARATE pill window (its own isolate) arrives
+  /// here as the serialized ParseResult. The DB write lives in THIS isolate —
+  /// one engine, one DB — and creating through taskState refreshes the live UI.
+  void _handlePillCapture(dynamic args) {
+    if (args is! Map) return;
+    final m = args.cast<dynamic, dynamic>();
+    final result = ParseResult(
+      cleanTitle: (m['cleanTitle'] as String?) ?? '',
+      startTime: m['startTime'] as int?,
+      endTime: m['endTime'] as int?,
+      priority: (m['priority'] as int?) ?? 0,
+      tags: (m['tags'] as List?)?.cast<String>() ?? const [],
+      dateKind: (m['dateKind'] as int?) ?? 0,
+      dateA: (m['dateA'] as int?) ?? -1,
+      dateB: (m['dateB'] as int?) ?? -1,
+      dateC: (m['dateC'] as int?) ?? -1,
+    );
+    final dest = resolveCapture(result, DateTime.now());
+    taskState?.createCaptured(result.cleanTitle, result, dest);
   }
 
   Future<void> openApp() async {
