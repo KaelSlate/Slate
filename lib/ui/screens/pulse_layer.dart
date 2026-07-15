@@ -961,6 +961,23 @@ class _WindowControlsState extends State<_WindowControls> with WindowListener {
     if (mounted) setState(() => _isMaximized = false);
   }
 
+  // The quick-capture morph un/re-maximizes the window with native Win32
+  // calls that bypass window_manager, so onWindowMaximize/Unmaximize never
+  // fire for it — the button icon desynced (showed "maximize" over a
+  // genuinely maximized window; a click then ran restore). Re-read the real
+  // state whenever the window regains focus or is restored, which always
+  // follows a morph or a tray open.
+  Future<void> _resyncMaximized() async {
+    final real = await windowManager.isMaximized();
+    if (mounted && real != _isMaximized) setState(() => _isMaximized = real);
+  }
+
+  @override
+  void onWindowFocus() => _resyncMaximized();
+
+  @override
+  void onWindowRestore() => _resyncMaximized();
+
   @override
   Widget build(BuildContext context) {
     // Fitts's Law: Controls flush with top-right edge

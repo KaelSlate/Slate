@@ -58,6 +58,8 @@ namespace SlateE2E {
 }
 
 [void][SlateE2E.Native]::SetProcessDPIAware()
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
 
 $script:SummonCtrl = $false   # remembered fallback: Ctrl+Alt+Space instead of Alt+Space
 
@@ -213,6 +215,46 @@ function Get-Placement([IntPtr]$h) {
   $p.length = [Runtime.InteropServices.Marshal]::SizeOf([type][SlateE2E.WINDOWPLACEMENT])
   [void][SlateE2E.Native]::GetWindowPlacement($h, [ref]$p)
   $p
+}
+
+# --- pixel truth (the Win32 flags can all be green while the RENDER is wrong:
+# --- round 8 shipped a pill shrunk into the corner past 24 green rect asserts) ---
+
+function Get-ScreenBitmap {
+  $b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+  $bmp = New-Object Drawing.Bitmap($b.Width, $b.Height)
+  $g = [Drawing.Graphics]::FromImage($bmp)
+  $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
+  $g.Dispose()
+  $bmp
+}
+
+# Headless agent sessions render a blank virtual screen - detect and skip.
+function Test-BitmapUniform($bmp) {
+  $first = $bmp.GetPixel(10, 10)
+  for ($x = 0; $x -lt 5; $x++) {
+    for ($y = 0; $y -lt 5; $y++) {
+      $p = $bmp.GetPixel([int]($bmp.Width * ($x + 0.5) / 5), [int]($bmp.Height * ($y + 0.5) / 5))
+      if ([math]::Abs($p.R - $first.R) -gt 6 -or [math]::Abs($p.G - $first.G) -gt 6 -or [math]::Abs($p.B - $first.B) -gt 6) {
+        return $false
+      }
+    }
+  }
+  return $true
+}
+
+# Mean absolute RGB difference between two same-size crops (2px sampling).
+function Get-CropMAD($a, $b) {
+  $sum = 0.0; $n = 0
+  for ($x = 0; $x -lt $a.Width; $x += 2) {
+    for ($y = 0; $y -lt $a.Height; $y += 2) {
+      $pa = $a.GetPixel($x, $y); $pb = $b.GetPixel($x, $y)
+      $sum += ([math]::Abs($pa.R - $pb.R) + [math]::Abs($pa.G - $pb.G) + [math]::Abs($pa.B - $pb.B)) / 3.0
+      $n++
+    }
+  }
+  if ($n -eq 0) { return 255 }
+  $sum / $n
 }
 
 # High-frequency state sampler in a background runspace (~2-4 ms per sample).

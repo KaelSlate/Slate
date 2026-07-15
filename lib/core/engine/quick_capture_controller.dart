@@ -147,9 +147,14 @@ class _Chord {
 ///   a Spotlight-style overlay on the cursor's monitor, then restores its
 ///   exact prior state. A VISIBLE window morphs atomically (dirty tree +
 ///   one SetWindowPos = the new root presents inside the resize, nothing
-///   blinks); hidden/minimized transitions run under setOpacity(0) until a
-///   fresh frame is presented — a resized swapchain shown before its first
-///   paint composites as a bright flash (the "white blink" bug).
+///   blinks); hidden/minimized transitions run at alpha 1/255 until fresh
+///   frames present at the new size. Never alpha 0 and never DWM cloak
+///   while RESIZING: under both (pixel-verified) the embedder's synchronous
+///   resize never presents a frame at the new size and the screen keeps a
+///   stale-size frame forever — the "pill shrunk into the bottom-right
+///   corner" bug. Alpha 1/255 is invisible to the eye but the window stays
+///   presentable. A bare (uncovered) show instead composites a resized
+///   swapchain before its first paint as a bright flash ("white blink").
 class QuickCaptureController with WindowListener {
   QuickCaptureController._();
   static final QuickCaptureController instance = QuickCaptureController._();
@@ -292,6 +297,36 @@ class QuickCaptureController with WindowListener {
     if (h == 0) return;
     _winSetWindowPos(h, insertAfter, r.left.round(), r.top.round(),
         r.width.round(), r.height.round(), _kSwpNoActivate);
+  }
+
+  /// Bring a COLD window up as the pill: behind another app, minimized, or
+  /// hidden to tray — anything that is NOT the actively-rendering foreground.
+  /// Pixel-proven root of the stretched-pill saga: such a window's embedder
+  /// swapchain is stale-sized, so showing + sizing it in one breath leaves
+  /// DWM stretching a stale frame (the pill shrunk into the bottom-right
+  /// corner). ANY resize performed while the window is already visible
+  /// rebuilds the swapchain (typing or a manual drag healed it live). So show
+  /// it OFF-SCREEN, resize-nudge it there to rebuild the surface out of sight,
+  /// then slide the corrected surface on-screen with a PURE move (no resize
+  /// left to flash). One SetWindowPlacement also un-hides / un-minimizes /
+  /// un-maximizes it.
+  Future<void> _coldMorph(Rect target) async {
+    final park = Rect.fromLTWH(target.left - target.width - 320, target.top,
+        target.width, target.height);
+    final parkNudge =
+        Rect.fromLTWH(park.left, park.top, park.width - 2, park.height - 2);
+    overlayMode.value = true;
+    _placementSet(park, showCmd: _kSwShowNormalNoActivate, restoreToMax: false);
+    await _assertRect(park); // forced off-screen even if placement clamps
+    await _pumpFrames(2);
+    _morphWindow(parkNudge, insertAfter: _kHwndTopmost); // heal nudge, off-screen
+    await _pumpFrames(2);
+    _morphWindow(park, insertAfter: _kHwndTopmost); // back to full size, off-screen
+    await _pumpFrames(2); // corrected surface presented out of sight
+    _morphWindow(target, insertAfter: _kHwndTopmost); // pure move on-screen
+    await _assertRect(target);
+    await _pumpFrames(1);
+    await windowManager.focus();
   }
 
   bool _isTopmost() {
@@ -608,11 +643,11 @@ class QuickCaptureController with WindowListener {
       // from an open day pill would mute every shortcut after restore.
       StaircaseState.isComposingTask = showGhost;
 
-      if (_priorVisible && !_priorMinimized && !_priorZoomed) {
-        // Visible window (focused or behind another app): ATOMIC morph.
-        // Dirty the tree with the overlay root, then let the single
-        // SetWindowPos present it at the overlay rect inside the call —
-        // the window never hides, never drops opacity. See _morphWindow.
+      if (showGhost) {
+        // Focused windowed Slate: ATOMIC morph. The window is the actively
+        // rendering foreground, so a single SetWindowPos presents the dirty
+        // overlay tree at the new rect inside the call — no hide, no opacity
+        // dip. The live MainScreen ghost keeps the app visually pinned.
         final sw = Stopwatch()..start();
         var frameUs = -1;
         WidgetsBinding.instance
@@ -630,41 +665,14 @@ class QuickCaptureController with WindowListener {
         return;
       }
 
-      if (_priorVisible && _priorZoomed) {
-        // Maximized Slate behind another app: SetWindowPos is SWALLOWED by
-        // a zoomed window (the "pill stretched in the corner" family) — so
-        // un-maximize + position happen in ONE SetWindowPlacement. Its
-        // WM_SIZE rides the same synchronous-resize train, so the dirty
-        // tree still presents atomically inside the call.
-        overlayMode.value = true; // NO await between this and the placement
-        _placementSet(target,
-            showCmd: _kSwShowNormalNoActivate, restoreToMax: false);
-        _morphWindow(target, insertAfter: _kHwndTopmost);
-        await _assertRect(target);
-        await windowManager.focus();
-        return;
-      }
-
-      // Hidden or minimized (either may still CARRY WS_MAXIMIZE — a hidden
-      // window keeps its zoomed style): nothing of Slate is on screen, so
-      // the proven opacity-0 recipe costs nothing visually — a resized
-      // swapchain shown before its first paint composites as a bright
-      // flash otherwise. One SetWindowPlacement un-hides + un-minimizes +
-      // un-maximizes + positions, atomically — no hide(), no taskbar churn,
-      // and no posted SC_RESTORE to race the reveal.
-      await windowManager.setOpacity(0.0);
-      overlayMode.value = true;
-      _placementSet(target,
-          showCmd: _kSwShowNormalNoActivate, restoreToMax: false);
-      _morphWindow(target, insertAfter: _kHwndTopmost);
-      await _assertRect(target);
-      // Fresh frames at the new size before the reveal — the anti-flash.
-      await _pumpFrames(2);
-      _setWindowRect(target); // last word on geometry, right before reveal
-      await windowManager.setOpacity(1.0);
-      await windowManager.focus();
+      // Every OTHER prior — behind another app (windowed OR maximized),
+      // minimized, or hidden to tray — is NOT the actively-rendering
+      // foreground, so its embedder swapchain is COLD and the cold-morph
+      // path warms it off-screen before revealing. See _coldMorph.
+      await _coldMorph(target);
     } catch (e) {
       CrashLog.trace('summon failed: $e');
+      _cloaked(false);
       // Scene never came up → the window is back to normal use; a lifted
       // minimum must not outlive the morph.
       if (!overlayMode.value) {
@@ -715,10 +723,11 @@ class QuickCaptureController with WindowListener {
           // a no-op right now: the pill IS the foreground. But it also
           // RAISES: for a behind-prior that is a full-screen Slate frame
           // above the user's app (the S4 flash) — so the behind case runs
-          // the whole dance at alpha 0 and reveals only after sinking
-          // below the anchor.
+          // the whole dance at alpha 1/255 (invisible, yet still presented
+          // — alpha 0 wedges the resize handshake) and reveals below the
+          // anchor.
           final behind = !_priorFocused;
-          if (behind) await windowManager.setOpacity(0.0);
+          if (behind) await windowManager.setOpacity(1 / 255);
           overlayMode.value = false; // dirty; placement's resize presents it
           _placementSet(prior,
               showCmd: _kSwShowMaximized, restoreToMax: false);
@@ -777,11 +786,13 @@ class QuickCaptureController with WindowListener {
         return;
       }
 
-      // Hidden or minimized prior: the pill vanishes (opacity 0), focus is
-      // yielded FIRST — hiding a window that is no longer foreground causes
-      // zero activation churn (the old order let Windows reassign focus
-      // mid-chain: the user's caret blinked on-off-on).
-      await windowManager.setOpacity(0.0);
+      // Hidden or minimized prior: the pill vanishes (alpha 1/255 —
+      // invisible but still presentable, so the zoomed re-plant below can
+      // deliver frames; alpha 0 wedges the resize handshake), focus is
+      // yielded FIRST — hiding a window that is no longer foreground
+      // causes zero activation churn (the old order let Windows reassign
+      // focus mid-chain: the user's caret blinked on-off-on).
+      await windowManager.setOpacity(1 / 255);
       if (!_priorMinimized && _priorZoomed && prior != null) {
         // The window was hidden-while-maximized. Re-plant WS_MAXIMIZE now,
         // while the invisible (alpha-0) pill is still the foreground —
