@@ -16,6 +16,7 @@ import 'core/state/first_run.dart';
 import 'core/state/local_prefs.dart';
 import 'core/state/task_state.dart';
 import 'core/theme/app_theme.dart';
+import 'pill_window.dart';
 import 'ui/overlays/quick_capture_overlay.dart';
 import 'ui/screens/main_screen.dart';
 import 'ui/screens/preview_first_run.dart';
@@ -48,6 +49,13 @@ Future<void> _warmFonts() async {
 }
 
 void main(List<String> args) {
+  // The runner launches a SECOND Flutter engine with `--pill` for the separate
+  // capture-pill window. It boots a minimal pill app and shares none of the main
+  // app's window/tray/hotkey machinery. See pill_window.dart.
+  if (args.contains('--pill')) {
+    runPillWindow();
+    return;
+  }
   // Crash observability for testers: every uncaught error (zone + framework)
   // lands in Documents/slate_data/logs with the app version. runApp must live
   // in the SAME zone as ensureInitialized, hence the wrap of the whole body.
