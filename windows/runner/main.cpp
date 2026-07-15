@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "flutter_window.h"
+#include "pill_window.h"
 #include "utils.h"
 
 namespace {
@@ -63,6 +64,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
+
+  // Separate capture-pill window: its own Flutter engine (`--pill` entrypoint),
+  // borderless + topmost + no taskbar/alt-tab entry. Lives for the whole
+  // process, shown only on the hotkey. SPIKE (phase 1b): shown once here to
+  // verify it renders; phase 2 gates it hidden + hotkey-driven.
+  flutter::DartProject pill_project(L"data");
+  pill_project.set_dart_entrypoint_arguments({"--pill"});
+  PillWindow pill_window(pill_project);
+  Win32Window::Point pill_origin(360, 320);
+  Win32Window::Size pill_size(600, 120);
+  if (pill_window.Create(L"SlatePill", pill_origin, pill_size, WS_POPUP,
+                         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) {
+    pill_window.Show();  // spike-only reveal
+  }
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {
