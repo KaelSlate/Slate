@@ -314,4 +314,31 @@ function Stop-Sampler($s) {
   @($s.Data)
 }
 
+# --- separate pill window (v1.0.6+) ---
+
+function Get-PillHwnd {
+  [SlateE2E.Native]::FindWindowW('FLUTTER_RUNNER_WIN32_WINDOW', 'SlatePill')
+}
+
+function Test-PillVisible {
+  $h = Get-PillHwnd
+  ($h -ne [IntPtr]::Zero) -and [SlateE2E.Native]::IsWindowVisible($h)
+}
+
+# Fire the capture hotkey; the pill is a SEPARATE window now, so success =
+# the SlatePill window becomes visible (not the main window morphing).
+function Send-PillHotkey {
+  $wa = Get-WorkArea
+  $pt = New-Object SlateE2E.POINT
+  [void][SlateE2E.Native]::SetCursorPos(
+    [int](($wa.Left + $wa.Right) / 2), [int](($wa.Top + $wa.Bottom) / 2))
+  Send-Chord $script:SummonCtrl
+  if (Wait-Until { Test-PillVisible } 1500) { return $true }
+  if (-not $script:SummonCtrl) {
+    Send-Chord $true
+    if (Wait-Until { Test-PillVisible } 1500) { $script:SummonCtrl = $true; return $true }
+  }
+  return $false
+}
+
 Export-ModuleMember -Function *

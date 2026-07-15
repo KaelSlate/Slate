@@ -1,8 +1,22 @@
-# Slate window-morph e2e harness
+# Slate pill-window e2e harness
 
-The regression matrix distilled from morph rounds 1-8. Committed on purpose:
-the rounds 1-7 scripts lived outside the repo and were lost, costing a full
-re-investigation.
+Since v1.0.6 the capture pill is its own always-on-top window (its own Flutter
+engine) — the main window is never morphed, so the entire rounds 1-8 morph
+matrix is retired. These scenarios assert the new invariant: the pill shows /
+hides instantly over whatever app is in front, from any main-window state, and
+the MAIN window is never touched.
+
+| # | Checks |
+|---|--------|
+| P1 | main tray-hidden -> hotkey shows the pill at the work area; Esc hides it; main stays hidden |
+| P2 | main windowed+focused -> pill cycle leaves the main window byte-identical |
+| P3 | main maximized -> pill cycle leaves it maximized, untouched |
+| P4 | pill over Notepad -> Esc returns focus to Notepad |
+| P5 | hotkey again toggles the pill off |
+| P6 | tray-open raises the main window to foreground + above Notepad (old bug 2) |
+| P7 | newest-wins single-instance handover |
+
+Run: `powershell -NoProfile -File tools\e2e\run_matrix.ps1 [-Exe ...] [-Scenario P2]`
 
 ## Run
 
