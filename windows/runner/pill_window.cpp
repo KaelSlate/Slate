@@ -50,6 +50,12 @@ void PillWindow::ShowPill() {
   HWND hwnd = GetHandle();
   if (!hwnd) return;
 
+  // Toggle: the hotkey pressed while the pill is up dismisses it (Raycast).
+  if (::IsWindowVisible(hwnd)) {
+    HidePill();
+    return;
+  }
+
   // Remember who to hand focus back to (unless that is us / the main window).
   HWND fg = ::GetForegroundWindow();
   if (fg && fg != hwnd) prior_foreground_ = fg;
