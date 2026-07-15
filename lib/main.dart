@@ -17,7 +17,6 @@ import 'core/state/local_prefs.dart';
 import 'core/state/task_state.dart';
 import 'core/theme/app_theme.dart';
 import 'pill_window.dart';
-import 'ui/overlays/quick_capture_overlay.dart';
 import 'ui/screens/main_screen.dart';
 import 'ui/screens/preview_first_run.dart';
 
@@ -194,30 +193,9 @@ class SlateApp extends StatelessWidget {
       theme: AppTheme.darkTheme,
       debugShowCheckedModeBanner: false,
       scrollBehavior: SlateDesktopScrollBehavior(),
-      // Root swap: the same window is either the app or the capture pill.
-      // When Slate itself is focused, capture stacks OVER the app instead —
-      // no window morph, MainScreen keeps its state.
-      home: ValueListenableBuilder<bool>(
-        valueListenable: QuickCaptureController.instance.overlayMode,
-        builder: (context, overlay, _) {
-          if (overlay) return const QuickCaptureOverlay();
-          // mainScreenHostKey: the same live MainScreen element reparents into
-          // the overlay's window ghost and back — one-frame move, state kept.
-          final main = kPreviewMode
-              ? const PreviewFirstRun() as Widget
-              : KeyedSubtree(
-                  key: QuickCaptureController.mainScreenHostKey,
-                  child: const MainScreen(),
-                );
-          return ValueListenableBuilder<bool>(
-            valueListenable: QuickCaptureController.instance.inAppCapture,
-            builder: (context, inApp, __) => Stack(children: [
-              main,
-              if (inApp) const QuickCaptureOverlay(inApp: true),
-            ]),
-          );
-        },
-      ),
+      // The capture pill is a SEPARATE window now (its own engine) — this
+      // window is only ever the app. No morph, no root swap.
+      home: kPreviewMode ? const PreviewFirstRun() : const MainScreen(),
     );
   }
 }

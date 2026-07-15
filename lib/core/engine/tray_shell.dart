@@ -117,30 +117,10 @@ class TrayShell with TrayListener {
   }
 
   Future<void> openApp() async {
-    final capture = QuickCaptureController.instance;
-    if (capture.overlayMode.value || capture.inAppCapture.value) {
-      capture.dismissTick.value++;
-      return;
-    }
-    // A tray/handover open can land while a morph restore is still in
-    // flight — its tail runs show/hide/placement of its own, and racing a
-    // show() into that leaves the window in whatever state the interleaving
-    // produced (flaky S8: came back windowed instead of maximized). Wait
-    // the morph out, bounded.
-    for (var i = 0; i < 40 && capture.busy; i++) {
-      await Future.delayed(const Duration(milliseconds: 25));
-    }
-    if (capture.overlayMode.value || capture.inAppCapture.value) {
-      capture.dismissTick.value++; // a replayed summon won the race
-      return;
-    }
-    // Self-heal: whatever a crashed/raced morph left behind (cloak, alpha 0,
-    // DWM transitions off), opening the app must always produce a REAL
-    // window. All idempotent no-ops on a healthy window.
-    await capture.healWindowState();
+    // The main window is a plain app window now — the capture pill is a
+    // separate window, so there is no morph to wait out or heal.
     await windowManager.show();
     await windowManager.focus();
-    CrashLog.trace('openApp: fg=${capture.windowIsForeground}');
   }
 
   Future<void> quit() async {
