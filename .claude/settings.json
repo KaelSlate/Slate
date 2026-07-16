@@ -33,7 +33,9 @@
       "PowerShell(powershell -NoProfile -File tools\\\\e2e\\\\run_matrix.ps1 -Exe Releases\\\\slate_v1.0.4\\\\slate.exe)",
       "PowerShell(git -C \"C:\\\\Users\\\\levpo\\\\Desktop\\\\Aura\" add -A)",
       "PowerShell(git -C \"C:\\\\Users\\\\levpo\\\\Desktop\\\\Aura\" status --short)",
-      "PowerShell($p = Get-Process slate -ErrorAction SilentlyContinue; if \\($p\\) { \"running: pid=$\\($p.Id\\) $\\($p.Path\\)\" } else { \"not running - relaunching\"; Start-Process \"C:\\\\Users\\\\levpo\\\\Desktop\\\\Aura\\\\Releases\\\\slate_v1.0.4\\\\slate.exe\" -ArgumentList \"--hidden\"; Start-Sleep -Seconds 3; $q = Get-Process slate -ErrorAction SilentlyContinue; \"now: pid=$\\($q.Id\\) $\\($q.Path\\)\" }; git -C \"C:\\\\Users\\\\levpo\\\\Desktop\\\\Aura\" log --oneline -3)"
+      "PowerShell($p = Get-Process slate -ErrorAction SilentlyContinue; if \\($p\\) { \"running: pid=$\\($p.Id\\) $\\($p.Path\\)\" } else { \"not running - relaunching\"; Start-Process \"C:\\\\Users\\\\levpo\\\\Desktop\\\\Aura\\\\Releases\\\\slate_v1.0.4\\\\slate.exe\" -ArgumentList \"--hidden\"; Start-Sleep -Seconds 3; $q = Get-Process slate -ErrorAction SilentlyContinue; \"now: pid=$\\($q.Id\\) $\\($q.Path\\)\" }; git -C \"C:\\\\Users\\\\levpo\\\\Desktop\\\\Aura\" log --oneline -3)",
+      "Bash(git checkout *)",
+      "Bash(cargo test *)"
     ]
   }
 }

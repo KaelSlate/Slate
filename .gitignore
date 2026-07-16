@@ -87,3 +87,4 @@ dart_devtools_*.json
 # Loose scratch Dart snippets (not part of the app or the test suite).
 /test_create.dart
 /test_encoding.dart
+.claude/settings.json
