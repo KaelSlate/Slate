@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../engine/slate_core_bridge.dart';
+import '../state/lesson_state.dart';
 
 /// Slate — global drag & drop core.
 /// One static session (StaircaseState pattern). Pointer move/up route through
@@ -271,6 +272,9 @@ class DragSession extends ChangeNotifier {
       _setPhase(DragPhase.springingBack);
       return;
     }
+    // A drop that actually landed — the drag invite has served its purpose and
+    // retires here, whether or not it was ever shown.
+    LessonState.instance.learn(Lessons.drag.id);
     _settleTarget = result.settleGlobalRect;
     _retargetLive = result.refineToCard;
     if (result.refineToCard) {

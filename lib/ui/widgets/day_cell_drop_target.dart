@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../core/interaction/drag_session.dart';
+import '../../core/interaction/timeline_math.dart';
 import '../../core/state/task_state.dart';
+import '../../core/theme/app_theme.dart';
 
 /// Drop zone for a week/month day cell. Registers itself by global rect
 /// (initState/dispose — PageView page flips keep the registry correct for free).
@@ -11,6 +13,11 @@ import '../../core/state/task_state.dart';
 /// the time. The wash never draws its own line when that divider exists (it owns
 /// [dividerKey]); it just stops short of it on both sides.
 class DayCellDropTarget extends StatefulWidget {
+  /// The stand-in split line, drawn only when the cell has no divider of its
+  /// own. Keyed so a test can prove the line sits ON the hit boundary — the two
+  /// used to be computed separately and disagreed by ~40-50px.
+  static const splitLineKey = Key('cell-split-line');
+
   final DateTime date;
   final TaskState? taskState;
 
@@ -93,11 +100,22 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return !_isSameDay(p) || p.task.startTime != null;
   }
 
-  /// Global Y of the cell's live divider; falls back to the list midpoint when
-  /// the cell has only one group (no divider drawn).
-  double _splitY(Rect r) {
+  /// The cell's own divider box, when it draws one (only when BOTH groups are
+  /// present). null → this cell has no divider and the wash must stand one in.
+  RenderBox? get _dividerBox {
     final box = _dividerKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box != null && box.attached && box.hasSize) {
+    if (box == null || !box.attached || !box.hasSize) return null;
+    return box;
+  }
+
+  /// Global Y of the split — THE one source of truth. The hit-test reads it and
+  /// the wash derives its line from it, so the line you see is always the line
+  /// that decides. (They used to be computed apart: the hit-test from
+  /// settleTopOffset, the line at a flat 50% of the padded box — ~40-50px of
+  /// daylight between the boundary and its own picture.)
+  double _splitGlobalY(Rect r) {
+    final box = _dividerBox;
+    if (box != null) {
       return box.localToGlobal(Offset.zero).dy + box.size.height / 2;
     }
     final head = widget.settleTopOffset.clamp(0.0, r.height);
@@ -110,17 +128,30 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   String _modeFor(Offset globalPos, DragPayload p) {
     if (p.task.startTime == null) return 'whole';
     final r = globalRect();
-    final overTop = r == null ? false : globalPos.dy < _splitY(r);
+    final overTop = r == null ? false : globalPos.dy < _splitGlobalY(r);
     if (overTop) return _isSameDay(p) ? 'reject' : 'keep';
     return 'clear';
   }
 
+  /// Names the OUTCOME, never the mechanic. 'whole' gets none on purpose —
+  /// there is no choice to explain, so narrating it would be noise.
+  static String? _badgeFor(String mode, DragPayload p) => switch (mode) {
+        'keep' => TimelineMath.fmtTime(p.task.startTime!),
+        'clear' => 'No time',
+        'reject' => 'Already here',
+        _ => null,
+      };
+
   @override
-  DropHover? hoverAt(Offset globalPos, DragPayload p) => DropHover(
-        zoneId: id,
-        targetDay: widget.date,
-        cellMode: _modeFor(globalPos, p),
-      );
+  DropHover? hoverAt(Offset globalPos, DragPayload p) {
+    final mode = _modeFor(globalPos, p);
+    return DropHover(
+      zoneId: id,
+      targetDay: widget.date,
+      cellMode: mode,
+      badgeText: _badgeFor(mode, p),
+    );
+  }
 
   @override
   DropResult? onDrop(Offset globalPos, DragPayload p) {
@@ -138,7 +169,7 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     // Everything but 'keep' lands in the unallocated section, below the divider.
     final top = (mode == 'keep'
             ? r.top + widget.settleTopOffset
-            : _splitY(r) + 6)
+            : _splitGlobalY(r) + 6)
         .clamp(r.top, r.bottom - widget.settleHeight);
     return DropResult(
       settleGlobalRect:
@@ -146,13 +177,14 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     );
   }
 
-  /// Divider Y in the wash's own (padded) coordinate space. null → no divider.
-  double? _splitLocal() {
+  /// The split in the wash's own (padded) coordinate space — the SAME Y the
+  /// hit-test splits on, just moved into the coords the wash paints in. Derived
+  /// from [_splitGlobalY], never recomputed, so the two cannot drift.
+  double? _splitLocalY() {
     final cellBox = context.findRenderObject() as RenderBox?;
-    final divBox = _dividerKey.currentContext?.findRenderObject() as RenderBox?;
     if (cellBox == null || !cellBox.attached || !cellBox.hasSize) return null;
-    if (divBox == null || !divBox.attached || !divBox.hasSize) return null;
-    final dy = divBox.localToGlobal(Offset.zero).dy + divBox.size.height / 2;
+    final r = cellBox.localToGlobal(Offset.zero) & cellBox.size;
+    final dy = _splitGlobalY(r);
     return cellBox.globalToLocal(Offset(0, dy)).dy - widget.highlightInsets.top;
   }
 
@@ -171,15 +203,20 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
                 builder: (_, h, _) {
                   final on = h?.zoneId == id;
                   final mode = on ? (h?.cellMode ?? 'reject') : 'off';
-                  // Read the divider's live Y in the BUILD phase — localToGlobal
-                  // inside LayoutBuilder runs during layout and throws.
-                  final local = _splitLocal();
+                  // Read the live Y in the BUILD phase — localToGlobal inside
+                  // LayoutBuilder runs during layout and throws.
+                  final local = _splitLocalY();
                   final whole = mode == 'whole';
                   // 'whole' = one continuous wash (no split, no gaps, no line).
                   final gap = whole ? 0.0 : _gap;
-                  final drawLine = local == null && !whole;
-                  // Only the hovered zone lights; the other stays OFF.
-                  final topOp = (whole || mode == 'keep') ? 1.0 : 0.0;
+                  // Keyed on the DIVIDER, not on a null Y: the fallback split is
+                  // a real Y too, and it is exactly the one that must be drawn.
+                  final drawLine = _dividerBox == null && !whole;
+                  // Only the hovered zone lights; the other stays OFF. 'reject'
+                  // lights faintly — a legal target that darkens reads as broken.
+                  final topOp = (whole || mode == 'keep')
+                      ? 1.0
+                      : (mode == 'reject' ? 0.45 : 0.0);
                   final bottomOp = (whole || mode == 'clear') ? 1.0 : 0.0;
                   return LayoutBuilder(builder: (context, c) {
                     final lineH = drawLine ? 0.5 : 0.0;
@@ -187,32 +224,40 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
                         (c.maxHeight - gap * 2 - lineH).clamp(0.0, c.maxHeight);
                     final split =
                         (local ?? c.maxHeight * 0.5).clamp(0.0, c.maxHeight);
-                    return ClipRRect(
-                      borderRadius: widget.highlightRadius,
-                      // stretch: without it the Expanded wash below collapses to
-                      // zero WIDTH (DecoratedBox has no child) and never shows.
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          SizedBox(
-                            height: (split - gap).clamp(0.0, maxTop),
-                            child: _wash(topOp),
+                    return Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: widget.highlightRadius,
+                          // stretch: without it the Expanded wash below collapses
+                          // to zero WIDTH (DecoratedBox has no child) and never
+                          // shows.
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SizedBox(
+                                height: (split - gap).clamp(0.0, maxTop),
+                                child: _wash(topOp),
+                              ),
+                              SizedBox(height: gap),
+                              // The cell already draws its divider — never
+                              // duplicate it. Only stand one in when it has none.
+                              if (drawLine)
+                                AnimatedOpacity(
+                                  key: DayCellDropTarget.splitLineKey,
+                                  duration: const Duration(milliseconds: 120),
+                                  opacity: on ? 1.0 : 0.0,
+                                  child: Container(
+                                      height: 0.5,
+                                      color: Colors.white.withOpacity(0.14)),
+                                ),
+                              SizedBox(height: gap),
+                              Expanded(child: _wash(bottomOp)),
+                            ],
                           ),
-                          SizedBox(height: gap),
-                          // The cell already draws its divider — never duplicate
-                          // it. Only stand one in when the cell has none.
-                          if (drawLine)
-                            AnimatedOpacity(
-                              duration: const Duration(milliseconds: 120),
-                              opacity: on ? 1.0 : 0.0,
-                              child: Container(
-                                  height: 0.5,
-                                  color: Colors.white.withOpacity(0.14)),
-                            ),
-                          SizedBox(height: gap),
-                          Expanded(child: _wash(bottomOp)),
-                        ],
-                      ),
+                        ),
+                        if (on && h?.badgeText != null)
+                          _badge(h!.badgeText!, mode, split, c),
+                      ],
                     );
                   });
                 },
@@ -221,6 +266,44 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
           ),
         ),
       ],
+    );
+  }
+
+  /// Sits just inside the half it describes, so the words and the wash name the
+  /// same outcome. Same material as the ribbon's time badge — one drop, one
+  /// language, whichever zone you are over.
+  Widget _badge(String text, String mode, double split, BoxConstraints c) {
+    const h = 18.0;
+    final top = (mode == 'clear' ? split + 8 : split - 8 - h)
+        .clamp(0.0, (c.maxHeight - h).clamp(0.0, c.maxHeight));
+    return Positioned(
+      left: 0,
+      right: 0,
+      top: top,
+      child: Center(
+        child: Container(
+          height: h,
+          padding: const EdgeInsets.symmetric(horizontal: 7),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.72),
+            borderRadius: BorderRadius.circular(5),
+            border:
+                Border.all(color: Colors.white.withOpacity(0.14), width: 0.5),
+          ),
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.clip,
+            style: AppFonts.robotoMono(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withOpacity(0.92),
+              letterSpacing: 0.3,
+            ),
+          ),
+        ),
+      ),
     );
   }
 

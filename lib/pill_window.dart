@@ -61,6 +61,18 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
   late final AnimationController _exit;
   bool _leaving = false;
 
+  // ── The rapid-dump lesson, owned here ─────────────────────────────────────
+  // This engine has no prefs and no DB by design (that isolation is what killed
+  // the whole rounds 1-8 bug class), so the lesson is session-scoped rather than
+  // reaching across the isolate boundary for state that doesn't exist here.
+  // Retires the moment the chord is used; gives up after a few summons so it
+  // can never nag.
+  static const _rapidHintSummons = 4;
+  int _summons = 0;
+  bool _shiftEnterUsed = false;
+
+  bool get _showRapidHint => !_shiftEnterUsed && _summons <= _rapidHintSummons;
+
   @override
   void initState() {
     super.initState();
@@ -90,6 +102,9 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
   /// entrance spring from zero, on screen.
   void _reveal() {
     _leaving = false;
+    // setState, not a bare ++: the pill widget reads _showRapidHint from THIS
+    // build, so the counter has to reach it before the user starts typing.
+    if (mounted) setState(() => _summons++);
     _notifier.clear();
     _exit.value = 0.0;
     _enter.value = 0.0;
@@ -132,7 +147,10 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
     });
     // Shift+Enter keeps the pill for a rapid dump; the widget already cleared
     // + refocused. Plain Enter: let the submit pulse read, then dissolve.
-    if (HardwareKeyboard.instance.isShiftPressed) return;
+    if (HardwareKeyboard.instance.isShiftPressed) {
+      if (!_shiftEnterUsed) setState(() => _shiftEnterUsed = true); // learned
+      return;
+    }
     Future.delayed(const Duration(milliseconds: 140), _dismiss);
   }
 
@@ -208,6 +226,7 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
                         notifier: _notifier,
                         floating: true,
                         opaqueBackdrop: true,
+                        showRapidHint: _showRapidHint,
                         destinationLabel: (r) =>
                             resolveCapture(r, DateTime.now()).label,
                         onSubmit: _onSubmit,

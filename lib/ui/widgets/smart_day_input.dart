@@ -6,7 +6,6 @@ import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/engine/slate_core_bridge.dart';
-import '../../core/state/first_run.dart';
 import '../../core/theme/app_theme.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -126,6 +125,13 @@ class SmartDayInputWidget extends StatefulWidget {
   /// OWN canvas, and there the lens is real.
   final bool opaqueBackdrop;
 
+  /// Whisper the rapid-dump chord beside the destination chip. Owned by the
+  /// caller: the pill window is its own Flutter engine with no prefs and no
+  /// engine, so it tracks this itself rather than reading a first-run flag that
+  /// only ever exists in the MAIN isolate. (It used to read exactly such a flag
+  /// — which is why this whisper could never appear at all.)
+  final bool showRapidHint;
+
   /// Resolved destination for the current parse («Inbox», «Tomorrow 09:00»).
   /// The chip is ALWAYS shown once there's text — it is the teacher of the one
   /// routing rule, so the user always sees where the task lands before Enter.
@@ -145,6 +151,7 @@ class SmartDayInputWidget extends StatefulWidget {
     required this.onDismiss,
     this.floating = false,
     this.opaqueBackdrop = false,
+    this.showRapidHint = false,
     this.destinationLabel,
     this.targeted = false,
   });
@@ -492,7 +499,7 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
         ? null
         : (widget.targeted && _dateIgnored)
             ? 'date stays here'
-            : (widget.floating && FirstRunController.instance.hintsActive.value)
+            : (widget.floating && widget.showRapidHint)
                 ? 'Shift+Enter — keep going'
                 : null;
     return AnimatedSwitcher(

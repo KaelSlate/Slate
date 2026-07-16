@@ -3,9 +3,6 @@ import 'dart:ffi';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
-import 'package:window_manager/window_manager.dart';
-
-import 'spatial_zoom_engine.dart';
 
 // user32 probe: hotkey_manager's RegisterHotKey never reports failure, so we
 // test each chord ourselves before handing it to the plugin.
@@ -44,12 +41,14 @@ class QuickCaptureController {
   /// Human-readable registered chord — tray menu/tooltip/hints show it.
   String hotkeyLabel = 'Alt+Space';
 
-  /// Set by the shell (pulse_layer) while the main screen is mounted. Called
-  /// when the chord fires and Slate is ALREADY in front: there the pill can be
-  /// an in-canvas real lens instead of the separate window's opaque body.
-  /// Returns true if it handled the summon; false → fall back to the window
-  /// (welcome/warmup up, not mounted, …) so the chord is never dead.
-  bool Function()? onInAppSummon;
+  /// Hosts of an IN-APP capture input (the shell's overview pill, the day
+  /// view's own) register a closer here. The chord shuts them all before it
+  /// raises the window pill — one capture instance at a time, always.
+  /// Each closer must be a safe no-op when its input isn't open.
+  final List<VoidCallback> _inAppClosers = [];
+
+  void addInAppCloser(VoidCallback close) => _inAppClosers.add(close);
+  void removeInAppCloser(VoidCallback close) => _inAppClosers.remove(close);
 
   static const _chords = [
     // Alt+Space: THE two-key summon chord (Spotlight/Raycast/PowerToys Run).
@@ -81,44 +80,34 @@ class QuickCaptureController {
     debugPrint('quick capture: no free chord — hotkey disabled');
   }
 
-  /// The chord. ONE capture object, summoned into the host that can render it
-  /// honestly WITHOUT ever tying the pill to the window's position:
+  /// The chord. ONE host, always: the separate always-on-top pill window.
   ///
-  ///   Slate FILLS the screen (maximized/fullscreen)
-  ///                   → the IN-CANVAS pill. Flutter can sample its own scene,
-  ///                     so the glass is a REAL lens — the same material as the
-  ///                     day pill. Safe here precisely because the window's
-  ///                     bottom IS the screen's bottom: the pill lands exactly
-  ///                     where it always does. No window is touched.
-  ///   anything else   → the separate always-on-top pill window.
+  /// The pill belongs to the SCREEN, not to the window — the lesson the whole
+  /// morph saga (rounds 1-8) was resolved by. An in-canvas pill rides the main
+  /// window, so it lands somewhere different depending on where that window
+  /// happens to be, and dragging the window part-way off-screen drags the pill
+  /// off with it. Gating in-canvas on maximized/fullscreen only narrowed that
+  /// bug; it also forked the chord's behaviour in two — Enter dismissed in one
+  /// host and never in the other, Shift+Enter worked in one and was dead in the
+  /// other. One host is the only way those can't drift apart again.
   ///
-  /// Windowed is NOT in-canvas on purpose: an in-canvas pill rides the window,
-  /// so dragging the window part-way off-screen would drag the pill off with it.
-  /// The global pill must be independent of the window — it belongs to the
-  /// screen. (Over foreign windows there is also nothing Flutter can blur, so
-  /// there the lens honestly becomes a body — a platform limit.)
+  /// (Over a foreign window there is nothing Flutter could blur anyway, so the
+  /// lens honestly becomes a body — a platform limit, not a choice.)
   ///
-  /// The chord TOGGLES the one capture (the pill window already toggles itself
-  /// — PillWindow::ShowPill hides when visible, Raycast-style — so the in-canvas
-  /// host must behave the same or the same chord would mean two things). It
-  /// never stacks a second input on top of an open one.
+  /// `C` and the day-cell «+» keep the in-canvas pill: those are a different
+  /// gesture — local, aimed at the day you're looking at, and they belong to
+  /// the window by definition.
+  ///
+  /// No focus/state query first: it made the chord async for nothing, and a
+  /// stale answer would make it silently dead. The chord ALWAYS gives a pill.
+  /// PillWindow::ShowPill toggles itself (hides when visible, Raycast-style).
   ///
   /// The reverse direction needs no guard — while the pill window is foreground
   /// the main window receives no key events at all, so `C` cannot fire.
   Future<void> _summon() async {
-    // Queried, not cached: a stale focus flag would make the chord silently
-    // dead from another app, and window_manager's focus events are known to
-    // miss transitions (see the maximize resync note in pulse_layer).
-    final overSlate = await windowManager.isFocused();
-    if (overSlate) {
-      // Only when the window fills the screen does the in-canvas pill land in
-      // the same place the global one would — otherwise it would be glued to a
-      // window the user can drag anywhere (or off-screen).
-      final fillsScreen = (await windowManager.isMaximized()) ||
-          (await windowManager.isFullScreen());
-      if (fillsScreen && (onInAppSummon?.call() ?? false)) return;
-      // A pill is already open somewhere — never stack a second one on it.
-      if (StaircaseState.isComposingTask) return;
+    // Copied: a closer may unregister mid-iteration (a view disposing).
+    for (final close in List<VoidCallback>.of(_inAppClosers)) {
+      close();
     }
     await _shellChannel.invokeMethod('showPill');
   }

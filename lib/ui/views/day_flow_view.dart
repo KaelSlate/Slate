@@ -11,6 +11,7 @@ import '../../core/engine/quick_capture_controller.dart';
 import '../../core/engine/slate_core_bridge.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/state/first_run.dart';
+import '../../core/state/lesson_state.dart';
 import '../../core/state/task_state.dart';
 import '../../core/interaction/drag_session.dart';
 import '../../core/interaction/timeline_math.dart';
@@ -181,6 +182,10 @@ class _DayFlowViewState extends State<DayFlowView>
     // fires even when no text field has focus, guards against active input.
     HardwareKeyboard.instance.addHandler(_globalKeyHandler);
 
+    // The chord raises the window pill; this shuts ours first so the two never
+    // stack (it no-ops when we have none open).
+    QuickCaptureController.instance.addInAppCloser(_closeAddTask);
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _flowScrollController.pending = _dayOpenOffset();
@@ -265,7 +270,12 @@ class _DayFlowViewState extends State<DayFlowView>
 
   /// Single close path — keeps the global composing flag in sync so the
   /// pulse_layer key handlers stop treating the pill as modal.
+  ///
+  /// No-op when closed: it is also registered as the chord's in-app closer, and
+  /// clearing isComposingTask blind would yank the flag out from under whatever
+  /// OTHER pill is open.
   void _closeAddTask() {
+    if (!_isAddingTask) return;
     StaircaseState.isComposingTask = false;
     _addFocusNode.unfocus();
     if (mounted) setState(() => _isAddingTask = false);
@@ -307,6 +317,7 @@ class _DayFlowViewState extends State<DayFlowView>
         primaryCtx.findAncestorStateOfType<EditableTextState>() != null) {
       return false;
     }
+    LessonState.instance.learn(Lessons.captureKey.id);
     _openAddTask();
     return true; // consumed
   }
@@ -351,6 +362,7 @@ class _DayFlowViewState extends State<DayFlowView>
     DragSession.instance.pointerGlobal.removeListener(_onDragPointerMoved);
     _autoScrollTicker?.dispose();
     StaircaseState.isComposingTask = false;
+    QuickCaptureController.instance.removeInAppCloser(_closeAddTask);
     HardwareKeyboard.instance.removeHandler(_globalKeyHandler);
     widget.autoFocusAddNotifier?.removeListener(_onAutoFocusTrigger);
     _flowScrollController.removeListener(_onRibbonScroll);
@@ -1001,29 +1013,34 @@ class _DayFlowViewState extends State<DayFlowView>
             'No tasks planned',
             style: AppTheme.bodyMedium.copyWith(color: Colors.white24, fontSize: 12),
           ),
-          const SizedBox(height: 8),
-          RichText(
-            textAlign: TextAlign.center,
-            text: TextSpan(
-              style: AppFonts.inter(
-                fontSize: 10,
-                color: Colors.white.withOpacity(0.18),
-              ),
-              children: [
-                const TextSpan(text: 'Press '),
-                TextSpan(
-                  text: 'C',
-                  style: AppFonts.inter(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white.withOpacity(0.32),
-                    letterSpacing: 0.5,
-                  ),
+          // Only while the mechanic is still unlearned. Once you know C, an
+          // empty day is just an empty day — room to breathe, not a prompt
+          // repeating itself at you forever.
+          if (!LessonState.instance.isLearned(Lessons.captureKey.id)) ...[
+            const SizedBox(height: 8),
+            RichText(
+              textAlign: TextAlign.center,
+              text: TextSpan(
+                style: AppFonts.inter(
+                  fontSize: 10,
+                  color: Colors.white.withOpacity(0.18),
                 ),
-                const TextSpan(text: ' to add a task'),
-              ],
+                children: [
+                  const TextSpan(text: 'Press '),
+                  TextSpan(
+                    text: 'C',
+                    style: AppFonts.inter(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white.withOpacity(0.32),
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  const TextSpan(text: ' to add a task'),
+                ],
+              ),
             ),
-          ),
+          ],
           const SizedBox(height: 40),
         ],
       ),

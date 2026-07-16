@@ -13,19 +13,15 @@ import 'core/engine/spatial_zoom_engine.dart';
 import 'core/engine/tray_shell.dart';
 import 'core/state/crash_log.dart';
 import 'core/state/first_run.dart';
+import 'core/state/lesson_state.dart';
 import 'core/state/local_prefs.dart';
 import 'core/state/task_state.dart';
 import 'core/theme/app_theme.dart';
 import 'pill_window.dart';
 import 'ui/screens/main_screen.dart';
-import 'ui/screens/preview_first_run.dart';
 
 /// Slate — Genesis Initialization
 /// Desktop-first scroll behavior. UI loads immediately.
-
-/// TEMPORARY — when true, boots the Warm Foundation preview instead of the app.
-/// Flip to false (and delete preview_first_run.dart) when done reviewing.
-const bool kPreviewMode = false;
 
 /// Eagerly activate the bundled variable fonts BEFORE the first frame. Pubspec
 /// `fonts:` register asynchronously during binding init, so without this the
@@ -140,11 +136,14 @@ Future<void> _boot(List<String> args) async {
     StaircaseState.currentLevel = StaircaseLevel.weekTactics;
   }
 
-  // First-run onboarding: welcome overlay until the first capture completes
-  // the arc; quiet C/V/I hints until the same moment (see FirstRunController).
+  // First-run: welcome overlay + the empty-state ghost silhouettes, both live
+  // until the first capture completes the arc (see FirstRunController).
   StaircaseState.isFirstRun = !prefs.onboarded;
   StaircaseState.showWelcome = !prefs.welcomed;
   FirstRunController.instance.syncFromPrefs();
+  // The teaching ladder outlives that moment: each mechanic retires on its own
+  // mastery, so one capture can no longer switch off everything unlearned.
+  LessonState.instance.syncFromPrefs();
 
   await fontsWarm; // ensure glyph metrics are ready before the first frame
   runApp(UncontrolledProviderScope(container: container, child: const SlateApp()));
@@ -195,7 +194,7 @@ class SlateApp extends StatelessWidget {
       scrollBehavior: SlateDesktopScrollBehavior(),
       // The capture pill is a SEPARATE window now (its own engine) — this
       // window is only ever the app. No morph, no root swap.
-      home: kPreviewMode ? const PreviewFirstRun() : const MainScreen(),
+      home: const MainScreen(),
     );
   }
 }

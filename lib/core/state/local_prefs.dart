@@ -23,6 +23,8 @@ class LocalPrefs {
   static const _kAutostart = 'slate_autostart';
   static const _kSeeded = 'slate_seeded';
   static const _kDemoIds = 'slate_demo_ids';
+  static const _kLessons = 'slate_lessons';
+  static const _kLessonSeen = 'slate_lesson_seen';
 
   /// Memoized load — main() and the engine (demo seeding) may both await it.
   static Future<LocalPrefs>? _loading;
@@ -75,6 +77,34 @@ class LocalPrefs {
     }
     _persist();
   }
+  /// Ids of mechanics the user has performed — each retires its own hint, so a
+  /// lesson can never be killed off by an unrelated action.
+  List<String> get lessons =>
+      (_data[_kLessons] as List?)?.cast<String>() ?? const [];
+  set lessons(List<String> v) {
+    if (v.isEmpty) {
+      _data.remove(_kLessons);
+    } else {
+      _data[_kLessons] = v;
+    }
+    _persist();
+  }
+
+  /// Sessions an invite has been shown in but not acted on. It retires anyway
+  /// once this runs out: a hint that keeps asking is nagging, and the compass
+  /// says calm, never guilt.
+  Map<String, int> get lessonSeen =>
+      (_data[_kLessonSeen] as Map?)?.map((k, v) => MapEntry('$k', v as int)) ??
+      const {};
+  set lessonSeen(Map<String, int> v) {
+    if (v.isEmpty) {
+      _data.remove(_kLessonSeen);
+    } else {
+      _data[_kLessonSeen] = v;
+    }
+    _persist();
+  }
+
   /// Launch at Windows login (tray-resident, --hidden). Default ON — the
   /// global capture hotkey is the product's core promise.
   bool get autostart => _data[_kAutostart] != 'false';

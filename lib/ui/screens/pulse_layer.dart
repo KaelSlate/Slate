@@ -12,7 +12,7 @@ import '../../core/engine/quick_capture_controller.dart';
 import '../../core/engine/capture_destination.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/interaction/drag_session.dart';
-import '../../core/state/first_run.dart';
+import '../../core/state/lesson_state.dart';
 import '../../core/state/task_state.dart';
 import '../../core/state/toast_bus.dart';
 import '../widgets/smart_day_input.dart';
@@ -20,6 +20,7 @@ import '../widgets/smart_day_input.dart';
 import '../views/month_grid_view.dart';
 import '../views/week_tactics_view.dart' show WeekTacticsView, WeekTacticsViewState;
 import '../views/day_flow_view.dart';
+import '../overlays/coach_whisper.dart';
 import '../overlays/drag_preview_layer.dart';
 import '../overlays/task_peek_layer.dart';
 import '../overlays/inbox_drawer.dart';
@@ -147,9 +148,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     );
     _inboxPulseCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 520));
-    // With Slate in front the chord uses THIS in-canvas pill (a real lens over
-    // our own content) instead of the separate window's opaque body.
-    QuickCaptureController.instance.onInAppSummon = _summonInApp;
+    // The chord raises the window pill; this shuts our in-canvas one first so
+    // the two never stack.
+    QuickCaptureController.instance.addInAppCloser(_closeOverviewCapture);
     HardwareKeyboard.instance.addHandler(_globalKeyHandler);
     _welcomeActive = StaircaseState.showWelcome;
 
@@ -274,6 +275,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     // ── 'I' — Inbox toggle ────────────────────────────────────────────────
     if (event.logicalKey == LogicalKeyboardKey.keyI && noModifiers) {
       if (_isTextFieldFocused()) return false;
+      LessonState.instance.learn(Lessons.inboxKey.id);
       _toggleInbox();
       return true;
     }
@@ -295,6 +297,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     // ── 'V' — Toggle WEEK ↔ MONTH view ──────────────────────────────────────
     if (event.logicalKey == LogicalKeyboardKey.keyV && noModifiers) {
       if (_isTextFieldFocused()) return false;
+      LessonState.instance.learn(Lessons.viewKey.id);
       // Lateral WEEK↔MONTH switch → neutral centered zoom (no day origin).
       _zoomPivot = Alignment.center;
       if (mounted) setState(() {
@@ -360,6 +363,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
         return true;
       }
       if (_isTextFieldFocused()) return false;
+      if (StaircaseState.currentLevel == StaircaseLevel.day) {
+        LessonState.instance.learn(Lessons.backKey.id);
+      }
       if (mounted) setState(() {
         final wasDay = StaircaseState.currentLevel == StaircaseLevel.day;
         StaircaseState.zoomOut();
@@ -402,33 +408,18 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     }
   }
 
-  void _pulseInbox() => _inboxPulseCtrl.forward(from: 0.0);
+  void _pulseInbox() {
+    // A capture just landed in a drawer they may never have opened.
+    LessonState.instance.offer(Lessons.inboxKey);
+    _inboxPulseCtrl.forward(from: 0.0);
+  }
 
-  /// The global chord fired while Slate is in front → host the capture HERE, in
-  /// canvas, where the glass is a real lens over our own content (identical
-  /// material to the day pill) instead of the separate window's opaque body.
-  ///
-  /// Non-targeted on purpose: the chord means the same thing wherever it is
-  /// pressed — capture with no day in focus → Inbox (the chip says so). The
-  /// targeted path stays `C` / the day-cell «+».
-  ///
-  /// The chord TOGGLES capture, matching PillWindow::ShowPill (which hides when
-  /// already visible) — one chord, one meaning, whichever host is in play.
-  ///
-  /// Returns false when this shell cannot host it right now, so the controller
-  /// falls back to the pill window and the chord is never dead.
-  bool _summonInApp() {
-    if (!mounted) return false;
-    if (StaircaseState.isWelcoming || StaircaseState.isWarmingUp) return false;
-    if (_captureActive) {
-      _closeOverviewCapture(); // toggle off
-      return true;
-    }
-    // The day view's own pill is open (it owns that one) — never stack a second
-    // input on it; the chord simply stands down.
-    if (StaircaseState.isComposingTask) return true;
-    _openOverviewCapture();
-    return true;
+  /// Clicked a day open: the invite is spent, and now — and only now — is the
+  /// moment the keyboard route means anything. The menu-shortcut pattern.
+  void _enterDayByClick() {
+    final firstTime = !LessonState.instance.isLearned(Lessons.zoom.id);
+    LessonState.instance.learn(Lessons.zoom.id);
+    if (firstTime) LessonState.instance.offer(Lessons.zoomKey);
   }
 
   void _toggleInbox() {
@@ -448,11 +439,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
   void dispose() {
     _warmupWatchdog?.cancel();
     StaircaseState.isWarmingUp = false;
-    // Only clear it if it is still OURS — a remount registers the new state
-    // before the old one disposes, and clearing then would kill the in-app path.
-    if (QuickCaptureController.instance.onInAppSummon == _summonInApp) {
-      QuickCaptureController.instance.onInAppSummon = null;
-    }
+    QuickCaptureController.instance.removeInAppCloser(_closeOverviewCapture);
     HardwareKeyboard.instance.removeHandler(_globalKeyHandler);
     _focusNode.dispose();
     _jumpToDateNotifier.dispose();
@@ -490,6 +477,15 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
           // Phase 4: Use the tracked hovered date. Ghost/empty cells report null → today.
           StaircaseState.selectedDate = _hoveredDate ?? today;
         }
+      }
+
+      // Ctrl+scroll IS the zoom — both the invite and its keyboard route are
+      // spent the moment it works once, in either direction.
+      LessonState.instance.learn(Lessons.zoom.id);
+      LessonState.instance.learn(Lessons.zoomKey.id);
+      if (event.scrollDelta.dy > 0 &&
+          StaircaseState.currentLevel == StaircaseLevel.day) {
+        LessonState.instance.learn(Lessons.backKey.id);
       }
 
       setState(() {
@@ -730,9 +726,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
             // Hover-peek popover — full title / month-day list. IgnorePointer,
             // so it never steals hover. Above cards, below the warmup veil.
             const TaskPeekLayer(),
-            // Quiet first-run chord hints — one ghost line, content follows
-            // the current view. Gone forever at the first capture.
-            const _FirstRunHints(),
+            // The coach: at most ONE line, only when its moment is live, and
+            // each mechanic retires on its own mastery.
+            CoachWhisper(hasTasks: (_taskState?.tasks.isNotEmpty) ?? false),
             // Shell-hosted overview capture pill (Week/Month): 'C' → Inbox, a
             // day-cell «+» → that day. Same pill/motion/routing as the day view.
             _buildOverviewCapture(),
@@ -838,13 +834,17 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
           onDayTap: (date) {
             // Anchor the zoom at the tapped cell (pointer-down precedes onTap).
             _zoomPivot = _pivotFromGlobal(_lastPointerDownGlobal);
+            _enterDayByClick();
             setState(() {
               StaircaseState.selectedDate = date;
               StaircaseState.currentLevel = StaircaseLevel.day;
             });
           },
           onDayHover: (date) => _hoveredDate = date,
-          onDayAdd: (date) => _openOverviewCapture(targetDay: date),
+          onDayAdd: (date) {
+            LessonState.instance.offer(Lessons.captureKey);
+            _openOverviewCapture(targetDay: date);
+          },
         );
       case StaircaseLevel.weekTactics:
         return WeekTacticsView(
@@ -855,13 +855,17 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
           onDayTap: (date) {
             // Anchor the zoom at the tapped column (pointer-down precedes onTap).
             _zoomPivot = _pivotFromGlobal(_lastPointerDownGlobal);
+            _enterDayByClick();
             setState(() {
               StaircaseState.selectedDate = date;
               StaircaseState.currentLevel = StaircaseLevel.day;
             });
           },
           onDayHover: (date) => _hoveredDate = date,
-          onDayAdd: (date) => _openOverviewCapture(targetDay: date),
+          onDayAdd: (date) {
+            LessonState.instance.offer(Lessons.captureKey);
+            _openOverviewCapture(targetDay: date);
+          },
           onToggleTask: taskState.toggleTask,
         );
       case StaircaseLevel.day:
@@ -907,6 +911,11 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
                         // ← Back — only shown in Day view
                         if (StaircaseState.currentLevel == StaircaseLevel.day)
                           _headerBtn(Icons.arrow_back_rounded, onTap: () {
+                            // Backed out with the mouse — now Esc means something.
+                            if (!LessonState.instance
+                                .isLearned(Lessons.backKey.id)) {
+                              LessonState.instance.offer(Lessons.backKey);
+                            }
                             setState(() {
                               final wasDay = StaircaseState.currentLevel == StaircaseLevel.day;
                               StaircaseState.zoomOut();
@@ -1019,6 +1028,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
         children: [
           _toggleSegment('WEEK', active: isWeek, onTap: () {
             if (!isWeek) {
+              LessonState.instance.offer(Lessons.viewKey);
               // Fire-and-forget prefs write (plain JSON) — the old awaited DPAPI
               // write added disk+decrypt latency to the view switch itself.
               LocalPrefs.instance.viewPref = 'week';
@@ -1033,6 +1043,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
           Container(width: 0.5, height: 16, color: Colors.white.withOpacity(0.08)),
           _toggleSegment('MONTH', active: !isWeek, onTap: () {
             if (isWeek) {
+              LessonState.instance.offer(Lessons.viewKey);
               LocalPrefs.instance.viewPref = 'month';
               StaircaseState.isWeekPreference = false;
               _zoomPivot = Alignment.center; // lateral switch → centered zoom
@@ -1283,98 +1294,3 @@ enum _WarmupPhase { veiled, warming, revealing, done }
 // FIRST-RUN HINTS — one ghost line, bottom center, until the first capture.
 // Content follows the view: week/month teach the global chords, the day view
 // teaches its own C and the way back. Whisper, never a tutorial balloon.
-// ───────────────────────────────────────────────────────────────────────────────
-class _FirstRunHints extends StatelessWidget {
-  const _FirstRunHints();
-
-  @override
-  Widget build(BuildContext context) {
-    final level = StaircaseState.currentLevel;
-    final hotkey = QuickCaptureController.instance.hotkeyLabel;
-    final List<Widget> items;
-    switch (level) {
-      case StaircaseLevel.day:
-        items = [
-          _chord('C', 'add to this day'),
-          _dot(),
-          _chord('Esc', 'back'),
-          _dot(),
-          _chord('Ctrl+scroll', 'zoom out'),
-        ];
-      case StaircaseLevel.weekTactics:
-      case StaircaseLevel.monthGrid:
-        final other =
-            level == StaircaseLevel.weekTactics ? 'month' : 'week';
-        final pages =
-            level == StaircaseLevel.weekTactics ? 'weeks' : 'months';
-        items = [
-          _chord('C', 'add'),
-          _dot(),
-          _chord(hotkey, 'capture'),
-          _dot(),
-          _chord('V', other),
-          _dot(),
-          _chord('I', 'inbox'),
-          _dot(),
-          _chord('Ctrl+scroll', 'zoom'),
-          _dot(),
-          _chord('↑↓', pages),
-        ];
-    }
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: 16,
-      child: ValueListenableBuilder<bool>(
-        valueListenable: FirstRunController.instance.hintsActive,
-        builder: (context, active, child) => IgnorePointer(
-          child: AnimatedOpacity(
-            duration: const Duration(milliseconds: 450),
-            curve: Curves.easeOut,
-            opacity: active ? 1.0 : 0.0,
-            child: child,
-          ),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: items,
-        ),
-      ),
-    );
-  }
-
-  Widget _chord(String key, String word) {
-    return Text.rich(
-      TextSpan(children: [
-        TextSpan(
-          text: key,
-          style: AppFonts.inter(
-            fontSize: 10.5,
-            fontWeight: FontWeight.w700,
-            color: Colors.white.withValues(alpha: 0.30),
-            letterSpacing: 0.5,
-          ),
-        ),
-        TextSpan(
-          text: '  $word',
-          style: AppFonts.inter(
-            fontSize: 10.5,
-            color: Colors.white.withValues(alpha: 0.17),
-            letterSpacing: 0.3,
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _dot() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      child: Text('·',
-          style: AppFonts.inter(
-            fontSize: 10.5,
-            color: Colors.white.withValues(alpha: 0.12),
-          )),
-    );
-  }
-}
