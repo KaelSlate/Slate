@@ -3,6 +3,9 @@ import 'dart:ffi';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
+import 'package:window_manager/window_manager.dart';
+
+import 'spatial_zoom_engine.dart';
 
 // user32 probe: hotkey_manager's RegisterHotKey never reports failure, so we
 // test each chord ourselves before handing it to the plugin.
@@ -62,13 +65,33 @@ class QuickCaptureController {
       await hotKeyManager.register(
         HotKey(key: c.key, modifiers: c.modifiers, scope: HotKeyScope.system),
         // Separate pill window: the runner raises it instantly.
-        keyDownHandler: (_) => _shellChannel.invokeMethod('showPill'),
+        keyDownHandler: (_) => _summon(),
       );
       hotkeyLabel = c.label;
       debugPrint('quick capture: registered ${c.label}');
       return;
     }
     debugPrint('quick capture: no free chord — hotkey disabled');
+  }
+
+  /// Raise the global pill — unless a capture is ALREADY on screen.
+  ///
+  /// One capture object, one instance: if the in-app pill (day `C`, overview
+  /// `C`, mouse «+») is open in the FOCUSED main window, the chord must not
+  /// stack a second input on top of it — the thing it would summon is already
+  /// there, focused. The focus test matters: with the app in the background the
+  /// in-app pill is not what the user is looking at, so Alt+Space from another
+  /// app must still summon normally.
+  ///
+  /// The reverse direction needs no guard: while the pill window is foreground
+  /// the main window receives no key events at all, so `C` cannot fire.
+  Future<void> _summon() async {
+    if (StaircaseState.isComposingTask) {
+      // Only pay the focus round-trip in the rare case a pill is open, so the
+      // common path stays instant.
+      if (await windowManager.isFocused()) return;
+    }
+    await _shellChannel.invokeMethod('showPill');
   }
 
   bool _chordFree(int mods, int vk) {

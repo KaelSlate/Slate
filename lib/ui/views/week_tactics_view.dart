@@ -700,8 +700,8 @@ class _DayColumnState extends State<_DayColumn> {
               // day in. Hidden mid-drag (hoverSuppressed).
               if (widget.onDayAdd != null)
                 Positioned(
-                  top: 8,
-                  right: 8,
+                  top: 13,
+                  right: 12,
                   child: IgnorePointer(
                     ignoring: !_isHovered,
                     child: AnimatedOpacity(

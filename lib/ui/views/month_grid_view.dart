@@ -794,8 +794,8 @@ class _MonthPageState extends State<_MonthPage> {
                     // instead of zooming in. Hidden mid-drag (hoverSuppressed).
                     if (widget.onDayAdd != null)
                       Positioned(
-                        top: 6,
-                        right: 6,
+                        top: 9,
+                        right: 9,
                         child: IgnorePointer(
                           ignoring: !isHovered,
                           child: AnimatedOpacity(
