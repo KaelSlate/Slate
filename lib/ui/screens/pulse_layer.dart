@@ -147,6 +147,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     );
     _inboxPulseCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 520));
+    // With Slate in front the chord uses THIS in-canvas pill (a real lens over
+    // our own content) instead of the separate window's opaque body.
+    QuickCaptureController.instance.onInAppSummon = _summonInApp;
     HardwareKeyboard.instance.addHandler(_globalKeyHandler);
     _welcomeActive = StaircaseState.showWelcome;
 
@@ -401,6 +404,33 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
 
   void _pulseInbox() => _inboxPulseCtrl.forward(from: 0.0);
 
+  /// The global chord fired while Slate is in front → host the capture HERE, in
+  /// canvas, where the glass is a real lens over our own content (identical
+  /// material to the day pill) instead of the separate window's opaque body.
+  ///
+  /// Non-targeted on purpose: the chord means the same thing wherever it is
+  /// pressed — capture with no day in focus → Inbox (the chip says so). The
+  /// targeted path stays `C` / the day-cell «+».
+  ///
+  /// The chord TOGGLES capture, matching PillWindow::ShowPill (which hides when
+  /// already visible) — one chord, one meaning, whichever host is in play.
+  ///
+  /// Returns false when this shell cannot host it right now, so the controller
+  /// falls back to the pill window and the chord is never dead.
+  bool _summonInApp() {
+    if (!mounted) return false;
+    if (StaircaseState.isWelcoming || StaircaseState.isWarmingUp) return false;
+    if (_captureActive) {
+      _closeOverviewCapture(); // toggle off
+      return true;
+    }
+    // The day view's own pill is open (it owns that one) — never stack a second
+    // input on it; the chord simply stands down.
+    if (StaircaseState.isComposingTask) return true;
+    _openOverviewCapture();
+    return true;
+  }
+
   void _toggleInbox() {
     _inboxOpen = !_inboxOpen;
     if (_inboxOpen) {
@@ -418,6 +448,11 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
   void dispose() {
     _warmupWatchdog?.cancel();
     StaircaseState.isWarmingUp = false;
+    // Only clear it if it is still OURS — a remount registers the new state
+    // before the old one disposes, and clearing then would kill the in-app path.
+    if (QuickCaptureController.instance.onInAppSummon == _summonInApp) {
+      QuickCaptureController.instance.onInAppSummon = null;
+    }
     HardwareKeyboard.instance.removeHandler(_globalKeyHandler);
     _focusNode.dispose();
     _jumpToDateNotifier.dispose();

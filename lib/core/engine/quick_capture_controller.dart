@@ -44,6 +44,13 @@ class QuickCaptureController {
   /// Human-readable registered chord — tray menu/tooltip/hints show it.
   String hotkeyLabel = 'Alt+Space';
 
+  /// Set by the shell (pulse_layer) while the main screen is mounted. Called
+  /// when the chord fires and Slate is ALREADY in front: there the pill can be
+  /// an in-canvas real lens instead of the separate window's opaque body.
+  /// Returns true if it handled the summon; false → fall back to the window
+  /// (welcome/warmup up, not mounted, …) so the chord is never dead.
+  bool Function()? onInAppSummon;
+
   static const _chords = [
     // Alt+Space: THE two-key summon chord (Spotlight/Raycast/PowerToys Run).
     // Probed first — PowerToys Run may own it, then we fall down the chain.
@@ -74,22 +81,32 @@ class QuickCaptureController {
     debugPrint('quick capture: no free chord — hotkey disabled');
   }
 
-  /// Raise the global pill — unless a capture is ALREADY on screen.
+  /// The chord. ONE capture object, summoned into the host that can render it
+  /// honestly:
   ///
-  /// One capture object, one instance: if the in-app pill (day `C`, overview
-  /// `C`, mouse «+») is open in the FOCUSED main window, the chord must not
-  /// stack a second input on top of it — the thing it would summon is already
-  /// there, focused. The focus test matters: with the app in the background the
-  /// in-app pill is not what the user is looking at, so Alt+Space from another
-  /// app must still summon normally.
+  ///   Slate in front  → the IN-CANVAS pill. Flutter can sample its own scene,
+  ///                     so the glass is a REAL lens — the same material as the
+  ///                     day pill. No window is touched.
+  ///   anything else   → the separate always-on-top pill window. Flutter cannot
+  ///                     read foreign windows' pixels (platform limit), so there
+  ///                     the lens honestly becomes a body.
   ///
-  /// The reverse direction needs no guard: while the pill window is foreground
+  /// The chord TOGGLES the one capture (the pill window already toggles itself
+  /// — PillWindow::ShowPill hides when visible, Raycast-style — so the in-canvas
+  /// host must behave the same or the same chord would mean two things). It
+  /// never stacks a second input on top of an open one.
+  ///
+  /// The reverse direction needs no guard — while the pill window is foreground
   /// the main window receives no key events at all, so `C` cannot fire.
   Future<void> _summon() async {
-    if (StaircaseState.isComposingTask) {
-      // Only pay the focus round-trip in the rare case a pill is open, so the
-      // common path stays instant.
-      if (await windowManager.isFocused()) return;
+    // Queried, not cached: a stale focus flag would make the chord silently
+    // dead from another app, and window_manager's focus events are known to
+    // miss transitions (see the maximize resync note in pulse_layer).
+    final overSlate = await windowManager.isFocused();
+    if (overSlate) {
+      if (onInAppSummon?.call() ?? false) return;
+      // No shell to host it, but a pill is open somewhere — never stack.
+      if (StaircaseState.isComposingTask) return;
     }
     await _shellChannel.invokeMethod('showPill');
   }
