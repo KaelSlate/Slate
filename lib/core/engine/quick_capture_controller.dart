@@ -82,14 +82,21 @@ class QuickCaptureController {
   }
 
   /// The chord. ONE capture object, summoned into the host that can render it
-  /// honestly:
+  /// honestly WITHOUT ever tying the pill to the window's position:
   ///
-  ///   Slate in front  → the IN-CANVAS pill. Flutter can sample its own scene,
+  ///   Slate FILLS the screen (maximized/fullscreen)
+  ///                   → the IN-CANVAS pill. Flutter can sample its own scene,
   ///                     so the glass is a REAL lens — the same material as the
-  ///                     day pill. No window is touched.
-  ///   anything else   → the separate always-on-top pill window. Flutter cannot
-  ///                     read foreign windows' pixels (platform limit), so there
-  ///                     the lens honestly becomes a body.
+  ///                     day pill. Safe here precisely because the window's
+  ///                     bottom IS the screen's bottom: the pill lands exactly
+  ///                     where it always does. No window is touched.
+  ///   anything else   → the separate always-on-top pill window.
+  ///
+  /// Windowed is NOT in-canvas on purpose: an in-canvas pill rides the window,
+  /// so dragging the window part-way off-screen would drag the pill off with it.
+  /// The global pill must be independent of the window — it belongs to the
+  /// screen. (Over foreign windows there is also nothing Flutter can blur, so
+  /// there the lens honestly becomes a body — a platform limit.)
   ///
   /// The chord TOGGLES the one capture (the pill window already toggles itself
   /// — PillWindow::ShowPill hides when visible, Raycast-style — so the in-canvas
@@ -104,8 +111,13 @@ class QuickCaptureController {
     // miss transitions (see the maximize resync note in pulse_layer).
     final overSlate = await windowManager.isFocused();
     if (overSlate) {
-      if (onInAppSummon?.call() ?? false) return;
-      // No shell to host it, but a pill is open somewhere — never stack.
+      // Only when the window fills the screen does the in-canvas pill land in
+      // the same place the global one would — otherwise it would be glued to a
+      // window the user can drag anywhere (or off-screen).
+      final fillsScreen = (await windowManager.isMaximized()) ||
+          (await windowManager.isFullScreen());
+      if (fillsScreen && (onInAppSummon?.call() ?? false)) return;
+      // A pill is already open somewhere — never stack a second one on it.
       if (StaircaseState.isComposingTask) return;
     }
     await _shellChannel.invokeMethod('showPill');
