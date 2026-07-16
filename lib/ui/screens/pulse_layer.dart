@@ -9,11 +9,13 @@ import '../../core/state/local_prefs.dart';
 import '../../core/theme/app_theme.dart';
 
 import '../../core/engine/quick_capture_controller.dart';
+import '../../core/engine/capture_destination.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/interaction/drag_session.dart';
 import '../../core/state/first_run.dart';
 import '../../core/state/task_state.dart';
 import '../../core/state/toast_bus.dart';
+import '../widgets/smart_day_input.dart';
 // year_strategy_view.dart removed — Phase 3 3-layer hierarchy
 import '../views/month_grid_view.dart';
 import '../views/week_tactics_view.dart' show WeekTacticsView, WeekTacticsViewState;
@@ -81,6 +83,19 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
   /// When incremented, DayFlowView auto-opens its inline add-task field.
   final ValueNotifier<int> _autoFocusAddNotifier = ValueNotifier(0);
 
+  // ── Overview capture pill (shell-hosted) ──────────────────────────────────
+  // Week/Month have no per-day timeline to host the in-day pill, so the shell
+  // hosts ONE in-canvas pill for them: `C` opens it non-targeted (→ Inbox), a
+  // day-cell «+» opens it targeted to that day. Same widget, motion and routing
+  // as the day pill — one capture object across the whole app.
+  bool _captureActive = false;
+  DateTime? _captureTargetDay;
+  final FocusNode _captureFocusNode = FocusNode();
+  final SmartInputNotifier _captureNotifier = SmartInputNotifier();
+  // A capture that lands in the Inbox gives the header Inbox button a soft pulse
+  // so the eye learns where the thought went (object permanence — nothing lost).
+  late final AnimationController _inboxPulseCtrl;
+
   // ── Anchored depth-zoom (staircase view switch) ──────────────────────────
   // The view switch is a directional Z-depth zoom, anchored at the tapped day.
   // These drive the custom transitionBuilder live (read each frame).
@@ -130,6 +145,8 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
       reverseDuration: const Duration(milliseconds: 320),
       vsync: this,
     );
+    _inboxPulseCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 520));
     HardwareKeyboard.instance.addHandler(_globalKeyHandler);
     _welcomeActive = StaircaseState.showWelcome;
 
@@ -215,6 +232,17 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
       return true;
     }
 
+    // Shell-hosted overview capture pill open — it owns the keys. Escape closes
+    // it HERE (works even if the field drops focus, and is consumed so it never
+    // falls through to zoom-out); everything else flows to its text field.
+    if (_captureActive) {
+      if (event.logicalKey == LogicalKeyboardKey.escape) {
+        _closeOverviewCapture();
+        return true;
+      }
+      return false;
+    }
+
     // While the day-view command pill is open it is fully modal: stand down so
     // every key flows to its text field and only day_flow_view handles C/Esc.
     // (Robust even if the field momentarily loses focus.)
@@ -245,6 +273,20 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
       if (_isTextFieldFocused()) return false;
       _toggleInbox();
       return true;
+    }
+
+    // ── 'C' — Capture, in Week/Month ──────────────────────────────────────
+    // One create key across every view: in an overview (no day in focus) it
+    // opens the shell pill non-targeted → Inbox. In the Day view day_flow_view
+    // owns 'C' (targeted to the day), so we stand down there.
+    if (event.logicalKey == LogicalKeyboardKey.keyC && noModifiers) {
+      if (_isTextFieldFocused()) return false;
+      final lvl = StaircaseState.currentLevel;
+      if (lvl == StaircaseLevel.weekTactics || lvl == StaircaseLevel.monthGrid) {
+        _openOverviewCapture();
+        return true;
+      }
+      return false;
     }
 
     // ── 'V' — Toggle WEEK ↔ MONTH view ──────────────────────────────────────
@@ -329,6 +371,36 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     return false;
   }
 
+  /// Open the shell-hosted capture pill. [targetDay] null → non-targeted
+  /// (no date/time → Inbox); a date → targeted to that day (a day-cell «+»).
+  /// isComposingTask stands the shell's other shortcuts down while typing.
+  void _openOverviewCapture({DateTime? targetDay}) {
+    if (_captureActive) return;
+    StaircaseState.isComposingTask = true;
+    setState(() {
+      _captureTargetDay = targetDay;
+      _captureActive = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _captureFocusNode.requestFocus();
+    });
+  }
+
+  void _closeOverviewCapture() {
+    if (!_captureActive) return;
+    StaircaseState.isComposingTask = false;
+    _captureFocusNode.unfocus();
+    _captureNotifier.clear();
+    if (mounted) {
+      setState(() {
+        _captureActive = false;
+        _captureTargetDay = null;
+      });
+    }
+  }
+
+  void _pulseInbox() => _inboxPulseCtrl.forward(from: 0.0);
+
   void _toggleInbox() {
     _inboxOpen = !_inboxOpen;
     if (_inboxOpen) {
@@ -352,6 +424,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     _monthScrollDelta.dispose();
     _autoFocusAddNotifier.dispose();
     _inboxCtrl.dispose();
+    _inboxPulseCtrl.dispose();
+    _captureFocusNode.dispose();
+    _captureNotifier.dispose();
     super.dispose();
   }
 
@@ -623,6 +698,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
             // Quiet first-run chord hints — one ghost line, content follows
             // the current view. Gone forever at the first capture.
             const _FirstRunHints(),
+            // Shell-hosted overview capture pill (Week/Month): 'C' → Inbox, a
+            // day-cell «+» → that day. Same pill/motion/routing as the day view.
+            _buildOverviewCapture(),
             // Calm self-dismissing toasts (undo etc.) — above the drawer.
             const SlateToastLayer(),
             // First-run welcome — teaches the one hotkey, confirms the first
@@ -658,6 +736,62 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     return KeyEventResult.ignored;
   }
 
+  /// The shell-hosted capture pill for Week/Month — the SAME widget, motion and
+  /// routing as the day pill. Bottom-center (user's choice), a real lens over
+  /// the overview canvas. Non-targeted → Inbox; targeted (day-cell «+») → the
+  /// pinned day, shown in the chip. Enter keeps it open for rapid multi-entry
+  /// (the widget re-focuses); Escape / empty-Enter / outside-tap closes it.
+  Widget _buildOverviewCapture() {
+    final ts = _taskState;
+    if (!_captureActive || ts == null) return const SizedBox.shrink();
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _closeOverviewCapture,
+        child: Stack(
+          children: [
+            // Whisper scrim — the overview stays visible THROUGH the lens.
+            Container(color: Colors.black.withOpacity(0.10)),
+            Positioned(
+              bottom: 40,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: SizedBox(
+                  width: 600,
+                  child: GestureDetector(
+                    onTap: () => _captureFocusNode.requestFocus(),
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.text,
+                      child: SmartDayInputWidget(
+                        core: ts.core,
+                        focusNode: _captureFocusNode,
+                        notifier: _captureNotifier,
+                        targeted: _captureTargetDay != null,
+                        destinationLabel: (r) => resolveCapture(
+                                r, DateTime.now(), viewedDay: _captureTargetDay)
+                            .label,
+                        onSubmit: (cleanTitle, result) {
+                          final dest = resolveCapture(result, DateTime.now(),
+                              viewedDay: _captureTargetDay);
+                          ts.createCaptured(cleanTitle, result, dest);
+                          // Landed in the Inbox → pulse the header button so the
+                          // eye learns where the thought went (nothing lost).
+                          if (dest.toInbox) _pulseInbox();
+                        },
+                        onDismiss: _closeOverviewCapture,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildCurrentLevel(TaskState taskState) {
     switch (StaircaseState.currentLevel) {
       case StaircaseLevel.monthGrid:
@@ -675,6 +809,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
             });
           },
           onDayHover: (date) => _hoveredDate = date,
+          onDayAdd: (date) => _openOverviewCapture(targetDay: date),
         );
       case StaircaseLevel.weekTactics:
         return WeekTacticsView(
@@ -691,6 +826,7 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
             });
           },
           onDayHover: (date) => _hoveredDate = date,
+          onDayAdd: (date) => _openOverviewCapture(targetDay: date),
           onToggleTask: taskState.toggleTask,
         );
       case StaircaseLevel.day:
@@ -774,14 +910,9 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Inbox toggle
-              _headerBtn(
-                Icons.inbox_rounded,
-                label: 'Inbox',
-                onTap: _toggleInbox,
-                marginRight: 10,
-                isActive: _inboxOpen,
-              ),
+              // Inbox toggle — pulses softly when a capture lands in the Inbox,
+              // so the eye learns where the thought went (object permanence).
+              _buildInboxButton(),
 
               // WEEK / MONTH toggle
               if (StaircaseState.currentLevel == StaircaseLevel.weekTactics ||
@@ -798,6 +929,46 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     );
   }
 
+
+  /// The Inbox header button, wrapped in a soft one-shot pulse (scale + glow)
+  /// played by [_pulseInbox] when a no-date capture lands in the Inbox — so the
+  /// landing is visible and nothing feels lost. Calm: a single rise-and-settle.
+  Widget _buildInboxButton() {
+    final btn = _headerBtn(
+      Icons.inbox_rounded,
+      label: 'Inbox',
+      onTap: _toggleInbox,
+      marginRight: 10,
+      isActive: _inboxOpen,
+    );
+    return AnimatedBuilder(
+      animation: _inboxPulseCtrl,
+      builder: (context, child) {
+        final v = _inboxPulseCtrl.value;
+        // Triangle 0→1→0: quick rise, gentle settle. No dart:math needed.
+        final pulse = v == 0.0 ? 0.0 : (v < 0.35 ? v / 0.35 : (1 - v) / 0.65);
+        return Transform.scale(
+          scale: 1.0 + 0.13 * pulse,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(6),
+              boxShadow: pulse > 0.01
+                  ? [
+                      BoxShadow(
+                        color: AppTheme.electricBlue.withOpacity(0.45 * pulse),
+                        blurRadius: 16 * pulse,
+                        spreadRadius: 1.0 * pulse,
+                      ),
+                    ]
+                  : const [],
+            ),
+            child: child,
+          ),
+        );
+      },
+      child: btn,
+    );
+  }
 
   Widget _buildViewToggle() {
     final isWeek = StaircaseState.currentLevel == StaircaseLevel.weekTactics;
@@ -1102,6 +1273,8 @@ class _FirstRunHints extends StatelessWidget {
         final pages =
             level == StaircaseLevel.weekTactics ? 'weeks' : 'months';
         items = [
+          _chord('C', 'add'),
+          _dot(),
           _chord(hotkey, 'capture'),
           _dot(),
           _chord('V', other),

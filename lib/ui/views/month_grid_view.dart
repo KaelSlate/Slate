@@ -31,6 +31,9 @@ class MonthGridView extends StatefulWidget {
   final ValueNotifier<int>? scrollDeltaNotifier;
   /// Reports which date the mouse is over (null = ghost/empty cell).
   final ValueChanged<DateTime?>? onDayHover;
+  /// Mouse «+»: add a task to THIS day (opens the shell capture pill pinned to
+  /// it). Separate from onDayTap (which zooms into the day).
+  final ValueChanged<DateTime>? onDayAdd;
 
   const MonthGridView({
     super.key,
@@ -40,6 +43,7 @@ class MonthGridView extends StatefulWidget {
     this.taskState,
     this.scrollDeltaNotifier,
     this.onDayHover,
+    this.onDayAdd,
   });
 
   @override
@@ -300,6 +304,7 @@ class _MonthGridViewState extends State<MonthGridView> {
                             taskState: widget.taskState,
                             onDayTap: widget.onDayTap,
                             onDayHover: widget.onDayHover,
+                            onDayAdd: widget.onDayAdd,
                             onToggleTask: (task) {
                               widget.taskState?.toggleTask(task);
                             },
@@ -434,6 +439,7 @@ class _MonthPage extends StatefulWidget {
   final TaskState? taskState;
   final ValueChanged<DateTime> onDayTap;
   final ValueChanged<DateTime?>? onDayHover;
+  final ValueChanged<DateTime>? onDayAdd;
   final ValueChanged<RustTask>? onToggleTask;
   final void Function(DateTime date, String title)? onCreateTask;
 
@@ -443,6 +449,7 @@ class _MonthPage extends StatefulWidget {
     this.taskState,
     required this.onDayTap,
     this.onDayHover,
+    this.onDayAdd,
     this.onToggleTask,
     this.onCreateTask,
   });
@@ -782,6 +789,26 @@ class _MonthPageState extends State<_MonthPage> {
                         const SizedBox(height: 6),
                       ],
                     ),
+                    // Mouse «+» — the calm way for a mouse user to add to THIS
+                    // day. Fades in on hover; its own tap is absorbed so it adds
+                    // instead of zooming in. Hidden mid-drag (hoverSuppressed).
+                    if (widget.onDayAdd != null)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: IgnorePointer(
+                          ignoring: !isHovered,
+                          child: AnimatedOpacity(
+                            duration: const Duration(milliseconds: 140),
+                            opacity: isHovered && !DragSession.hoverSuppressed
+                                ? 1.0
+                                : 0.0,
+                            child: _DayAddButton(
+                              onTap: () => widget.onDayAdd!(date),
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 );
               },
@@ -790,6 +817,54 @@ class _MonthPageState extends State<_MonthPage> {
         ),
       ),
     ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAY ADD BUTTON — the quiet mouse «+» that appears on a day-cell hover. Its own
+// tap is absorbed (opaque) so it adds to the day instead of zooming in. Basic
+// cursor (manifest law: no I-beam outside a text field).
+// ─────────────────────────────────────────────────────────────────────────────
+class _DayAddButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _DayAddButton({required this.onTap});
+
+  @override
+  State<_DayAddButton> createState() => _DayAddButtonState();
+}
+
+class _DayAddButtonState extends State<_DayAddButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.basic,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          width: 20,
+          height: 20,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: _hovered ? 0.14 : 0.06),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: _hovered ? 0.28 : 0.12),
+              width: 0.5,
+            ),
+          ),
+          child: Icon(
+            Icons.add_rounded,
+            size: 13,
+            color: Colors.white.withValues(alpha: _hovered ? 0.8 : 0.45),
+          ),
+        ),
+      ),
     );
   }
 }

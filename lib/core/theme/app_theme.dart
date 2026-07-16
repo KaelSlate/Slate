@@ -313,7 +313,11 @@ class AppTheme {
   static const double glassSpringDismissStiffness = 300.0;
   static const double glassSpringScaleFromX       = 0.55;  // unfurls sideways
   static const double glassSpringScaleFromY       = 0.90;  // barely in height
+  static const double glassEnterRise              = 10.0;  // px slide-up on enter
   static const Duration glassMorphDuration    = Duration(milliseconds: 350);
+  // The ONE exit, shared by every pill: a quick easeInCubic settle-down (matches
+  // the global pill window's `_exit`). Applied by SmartDayInputWidget._dismiss.
+  static const Duration glassDismissDuration  = Duration(milliseconds: 170);
 
   // ── Focus ring ───────────────────────────────────────────────────────────────
   // Thin white hairline that fades in (spring) when the TextField has focus.

@@ -87,19 +87,33 @@ enum DateToken {
 /// Parse a raw input string into structured tokens.
 /// This is the hot path — called on every keystroke.
 fn parse_input(raw: &str) -> ParsedInput {
+    parse_input_opts(raw, true)
+}
+
+/// Parse with options. `extract_date_enabled = false` is the TARGETED mode: the
+/// pill is already pinned to a specific day (day-view `C`/«+», mouse-«+»), so a
+/// typed calendar date must NOT re-route the task. We skip date extraction — the
+/// date words STAY in `clean_title` (zero lost input) and `date` is None — while
+/// still parsing time (a time schedules WITHIN the pinned day), tags, priority.
+fn parse_input_opts(raw: &str, extract_date_enabled: bool) -> ParsedInput {
     let mut text = raw.to_string();
-    
+
     // ── Step 1: Priority ──────────────────────────────────────────────────────
     let priority = extract_priority(&mut text);
-    
+
     // ── Step 2: Tags ──────────────────────────────────────────────────────────
     let tags = extract_tags(&mut text);
-    
+
     // ── Step 3: Time ──────────────────────────────────────────────────────────
     let (start_time, end_time) = extract_time(&mut text);
 
     // ── Step 4: Date (after time: dotted HH.MM keeps precedence rules local) ──
-    let date = extract_date(&mut text);
+    // Targeted mode leaves the date in place as ordinary title text.
+    let date = if extract_date_enabled {
+        extract_date(&mut text)
+    } else {
+        None
+    };
 
     // ── Step 5: Cleanup ───────────────────────────────────────────────────────
     let clean_title = normalize_whitespace(&text);
@@ -1027,33 +1041,24 @@ fn normalize_whitespace(s: &str) -> String {
 // C-ABI EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Parse a raw input string and return structured tokens.
-/// Called on every keystroke from Flutter via dart:ffi.
-/// Caller MUST free the result via `ffi_free_parse_result`.
-#[no_mangle]
-pub extern "C" fn ffi_parse_input(raw_ptr: *const c_char) -> CParseResult {
-    // Safety: null check
-    if raw_ptr.is_null() {
-        return CParseResult {
-            clean_title: CString::new("").unwrap_or_default().into_raw(),
-            start_time: -1,
-            end_time: -1,
-            priority: 0,
-            tags: std::ptr::null_mut(),
-            tag_count: 0,
-            date_kind: 0,
-            date_a: -1,
-            date_b: -1,
-            date_c: -1,
-        };
+/// Empty result for a null pointer — one shape, reused by both exports.
+fn empty_c_parse_result() -> CParseResult {
+    CParseResult {
+        clean_title: CString::new("").unwrap_or_default().into_raw(),
+        start_time: -1,
+        end_time: -1,
+        priority: 0,
+        tags: std::ptr::null_mut(),
+        tag_count: 0,
+        date_kind: 0,
+        date_a: -1,
+        date_b: -1,
+        date_c: -1,
     }
-    
-    let raw_str = unsafe { CStr::from_ptr(raw_ptr) }
-        .to_str()
-        .unwrap_or("");
-    
-    let parsed = parse_input(raw_str);
-    
+}
+
+/// Marshal a safe ParsedInput into the C-ABI struct (caller-frees).
+fn to_c_parse_result(parsed: ParsedInput) -> CParseResult {
     // Convert tags to C array. Boxed slice (len == capacity BY CONSTRUCTION) so the
     // free side can reconstruct the exact allocation — the previous Vec+forget
     // pattern silently relied on collect() allocating exactly len, which is UB the
@@ -1071,7 +1076,7 @@ pub extern "C" fn ffi_parse_input(raw_ptr: *const c_char) -> CParseResult {
     } else {
         std::ptr::null_mut()
     };
-    
+
     let (date_kind, date_a, date_b, date_c) = match parsed.date {
         None => (0u8, -1, -1, -1),
         Some(DateToken::Offset(n)) => (1, n, -1, -1),
@@ -1091,6 +1096,31 @@ pub extern "C" fn ffi_parse_input(raw_ptr: *const c_char) -> CParseResult {
         date_b,
         date_c,
     }
+}
+
+/// Parse a raw input string and return structured tokens.
+/// Called on every keystroke from Flutter via dart:ffi.
+/// Caller MUST free the result via `ffi_free_parse_result`.
+#[no_mangle]
+pub extern "C" fn ffi_parse_input(raw_ptr: *const c_char) -> CParseResult {
+    if raw_ptr.is_null() {
+        return empty_c_parse_result();
+    }
+    let raw_str = unsafe { CStr::from_ptr(raw_ptr) }.to_str().unwrap_or("");
+    to_c_parse_result(parse_input(raw_str))
+}
+
+/// Targeted-mode parse: same as `ffi_parse_input` but the pill is already pinned
+/// to a day, so a typed calendar date is left as ordinary title text (never
+/// re-routes the task). Time/tags/priority still parse. Caller MUST free via
+/// `ffi_free_parse_result`.
+#[no_mangle]
+pub extern "C" fn ffi_parse_input_targeted(raw_ptr: *const c_char) -> CParseResult {
+    if raw_ptr.is_null() {
+        return empty_c_parse_result();
+    }
+    let raw_str = unsafe { CStr::from_ptr(raw_ptr) }.to_str().unwrap_or("");
+    to_c_parse_result(parse_input_opts(raw_str, false))
 }
 
 /// Free a CParseResult returned by `ffi_parse_input`.
@@ -1312,5 +1342,40 @@ mod tests {
         assert_eq!(r.priority, 0);
         assert!(r.tags.is_empty());
         assert_eq!(r.clean_title, "Buy groceries");
+    }
+
+    // ── Targeted mode (pill pinned to a day): the date must NOT be extracted;
+    //    it stays as ordinary title text (zero lost input). Time still parses. ──
+
+    #[test]
+    fn test_targeted_keeps_date_as_text() {
+        // Normal parse would strip "14 июля" and route elsewhere.
+        let normal = parse_input("позвонить маме 14 июля");
+        assert_eq!(normal.date, Some(DateToken::Explicit(0, 7, 14)));
+        assert_eq!(normal.clean_title, "позвонить маме");
+
+        // Targeted parse: date stays in the title, no date token.
+        let targeted = parse_input_opts("позвонить маме 14 июля", false);
+        assert_eq!(targeted.date, None);
+        assert_eq!(targeted.clean_title, "позвонить маме 14 июля");
+    }
+
+    #[test]
+    fn test_targeted_keeps_relative_date_but_parses_time() {
+        // "tomorrow" stays as text (pinned day wins), but 15:00 still schedules.
+        let targeted = parse_input_opts("call mom tomorrow 15:00", false);
+        assert_eq!(targeted.date, None);
+        assert_eq!(targeted.start_time, Some(900));
+        assert_eq!(targeted.clean_title, "call mom tomorrow");
+    }
+
+    #[test]
+    fn test_targeted_still_parses_tags_and_priority() {
+        let targeted = parse_input_opts("отчёт 15.07 !! #работа", false);
+        assert_eq!(targeted.date, None);
+        assert_eq!(targeted.priority, 2);
+        assert_eq!(targeted.tags, vec!["работа"]);
+        // The date words remain; tokens for priority/tags are still stripped.
+        assert_eq!(targeted.clean_title, "отчёт 15.07");
     }
 }

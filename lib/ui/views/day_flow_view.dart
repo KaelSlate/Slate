@@ -516,8 +516,11 @@ class _DayFlowViewState extends State<DayFlowView>
                               core: widget.core,
                               focusNode: _addFocusNode,
                               notifier: _smartNotifier,
-                              // Default day = the day centered under the timeline;
-                              // a date typed in the text («завтра», «15.07») overrides it.
+                              // Pinned to the day centered under the timeline. In
+                              // targeted mode a typed date STAYS as title text (it
+                              // never re-routes the task) while a typed time still
+                              // schedules within the day — the chip shows the day.
+                              targeted: true,
                               destinationLabel: (r) => resolveCapture(r, DateTime.now(),
                                       viewedDay: _ribbonDate.value)
                                   .label,

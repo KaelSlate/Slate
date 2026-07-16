@@ -342,6 +342,7 @@ class SlateCore {
 
   // Phase 5: NLP + Smart Day Input
   FfiParseInputDart? _ffiParseInput;
+  FfiParseInputDart? _ffiParseInputTargeted;
   FfiFreeParseResultDart? _ffiFreeParseResult;
   FfiCreateTaskExDart? _ffiCreateTaskEx;
   FfiUpdateTaskExDart? _ffiUpdateTaskEx;
@@ -397,6 +398,7 @@ class SlateCore {
 
       // Phase 5: NLP Parser + Smart Day Input
       _ffiParseInput = _lib!.lookupFunction<FfiParseInputNative, FfiParseInputDart>('ffi_parse_input');
+      _ffiParseInputTargeted = _lib!.lookupFunction<FfiParseInputNative, FfiParseInputDart>('ffi_parse_input_targeted');
       _ffiFreeParseResult = _lib!.lookupFunction<FfiFreeParseResultNative, FfiFreeParseResultDart>('ffi_free_parse_result');
       _ffiCreateTaskEx = _lib!.lookupFunction<FfiCreateTaskExNative, FfiCreateTaskExDart>('ffi_create_task_ex');
       _ffiUpdateTaskEx = _lib!.lookupFunction<FfiUpdateTaskExNative, FfiUpdateTaskExDart>('ffi_update_task_ex');
@@ -1054,11 +1056,17 @@ class SlateCore {
 
   /// Parse raw input string via Rust NLP engine.
   /// Returns structured result with cleaned title, time, priority, and tags.
-  ParseResult parseInput(String raw) {
-    if (_ffiConnected && _ffiParseInput != null && _ffiFreeParseResult != null) {
+  ///
+  /// [targeted] = the pill is pinned to a specific day (day-view `C`/«+»,
+  /// mouse-«+»), so a typed calendar date must NOT re-route the task: the date
+  /// stays as ordinary title text (zero lost input) and `dateKind` is 0. Time,
+  /// tags and priority still parse. Routes to `ffi_parse_input_targeted`.
+  ParseResult parseInput(String raw, {bool targeted = false}) {
+    final parseFn = targeted ? _ffiParseInputTargeted : _ffiParseInput;
+    if (_ffiConnected && parseFn != null && _ffiFreeParseResult != null) {
       final result = using((Arena arena) {
         final rawPtr = _safeCString(raw, arena);
-        return _ffiParseInput!(rawPtr);
+        return parseFn(rawPtr);
       });
 
       try {

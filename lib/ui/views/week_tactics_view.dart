@@ -31,6 +31,9 @@ class WeekTacticsView extends StatefulWidget {
   final TaskState? taskState;
   /// Phase 4: Reports which date the mouse is over (null = empty space).
   final ValueChanged<DateTime?>? onDayHover;
+  /// Mouse «+»: add a task to THIS day (opens the shell capture pill pinned to
+  /// it). Separate from onDayTap (which zooms into the day).
+  final ValueChanged<DateTime>? onDayAdd;
 
   const WeekTacticsView({
     super.key,
@@ -40,6 +43,7 @@ class WeekTacticsView extends StatefulWidget {
     this.jumpToDateNotifier,
     this.taskState,
     this.onDayHover,
+    this.onDayAdd,
   });
 
   @override
@@ -514,6 +518,7 @@ class WeekTacticsViewState extends State<WeekTacticsView> {
                   onHover: (hovered) {
                     widget.onDayHover?.call(hovered ? cellDate : null);
                   },
+                  onDayAdd: widget.onDayAdd,
                 ),
                 ),
               ),
@@ -541,6 +546,8 @@ class _DayColumn extends StatefulWidget {
   final TaskState? taskState;
   /// Phase 4: Reports mouse enter/exit for hover-date tracking.
   final ValueChanged<bool>? onHover;
+  /// Mouse «+»: add a task to this day (opens the shell capture pill pinned here).
+  final ValueChanged<DateTime>? onDayAdd;
   /// Attached to the timed/untimed divider — the drop wash splits on it.
   final GlobalKey dividerKey;
 
@@ -555,6 +562,7 @@ class _DayColumn extends StatefulWidget {
     this.animateEntrance = false,
     this.taskState,
     this.onHover,
+    this.onDayAdd,
   });
 
   @override
@@ -687,6 +695,27 @@ class _DayColumnState extends State<_DayColumn> {
                   ),
                 ),
               ),
+              // Mouse «+» — the calm way for a mouse user to add to THIS day.
+              // Fades in on hover; its own tap is absorbed so it never zooms the
+              // day in. Hidden mid-drag (hoverSuppressed).
+              if (widget.onDayAdd != null)
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: IgnorePointer(
+                    ignoring: !_isHovered,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 140),
+                      opacity:
+                          _isHovered && !DragSession.hoverSuppressed ? 1.0 : 0.0,
+                      child: _DayAddButton(
+                        onTap: () => widget.onDayAdd!(
+                            DateTime.fromMillisecondsSinceEpoch(
+                                widget.cell.dateTimestamp)),
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
@@ -968,6 +997,54 @@ class _GhostDayStructure extends StatelessWidget {
           ),
         ),
       ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAY ADD BUTTON — the quiet mouse «+» that appears on a day-cell hover.
+// Its own tap is absorbed (opaque) so clicking it adds to the day instead of
+// zooming in. Basic cursor (manifest law: no I-beam outside a text field).
+// ─────────────────────────────────────────────────────────────────────────────
+class _DayAddButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _DayAddButton({required this.onTap});
+
+  @override
+  State<_DayAddButton> createState() => _DayAddButtonState();
+}
+
+class _DayAddButtonState extends State<_DayAddButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.basic,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          width: 22,
+          height: 22,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: _hovered ? 0.14 : 0.06),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: _hovered ? 0.28 : 0.12),
+              width: 0.5,
+            ),
+          ),
+          child: Icon(
+            Icons.add_rounded,
+            size: 14,
+            color: Colors.white.withValues(alpha: _hovered ? 0.8 : 0.45),
+          ),
+        ),
+      ),
     );
   }
 }

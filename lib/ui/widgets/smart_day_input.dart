@@ -127,8 +127,14 @@ class SmartDayInputWidget extends StatefulWidget {
   final bool opaqueBackdrop;
 
   /// Resolved destination for the current parse («Inbox», «Tomorrow 09:00»).
-  /// Shown always when [floating], else only when the text carries a date.
+  /// The chip is ALWAYS shown once there's text — it is the teacher of the one
+  /// routing rule, so the user always sees where the task lands before Enter.
   final String Function(ParseResult result)? destinationLabel;
+
+  /// Targeted mode: the pill is pinned to a specific day (day-view `C`/«+»,
+  /// mouse-«+»). Parsing runs in targeted mode (a typed date stays as title
+  /// text, never re-routes), and a faint whisper appears if a date is detected.
+  final bool targeted;
 
   const SmartDayInputWidget({
     super.key,
@@ -140,6 +146,7 @@ class SmartDayInputWidget extends StatefulWidget {
     this.floating = false,
     this.opaqueBackdrop = false,
     this.destinationLabel,
+    this.targeted = false,
   });
 
   @override
@@ -152,6 +159,9 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
   ParseResult _lastResult = const ParseResult();
   bool _isFocused = false;
   bool _isDismissing = false;
+  /// Targeted pill only: a calendar date was typed but is being kept as text
+  /// (the pinned day wins). Drives the faint "date stays here" whisper.
+  bool _dateIgnored = false;
 
   late final AnimationController _appearController;
   late final AnimationController _submitAnim;
@@ -280,9 +290,18 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
         _controller.updateResult(cleared);
         widget.notifier.update(cleared);
       }
+      if (_dateIgnored) setState(() => _dateIgnored = false);
       return;
     }
-    final result = widget.core.parseInput(raw);
+    final result = widget.core.parseInput(raw, targeted: widget.targeted);
+    // Targeted pill: a typed date is kept as text (pinned day wins). Detect it
+    // via a plain parse so we can whisper that it stayed put — never silent.
+    if (widget.targeted) {
+      final wouldHaveDate = widget.core.parseInput(raw).dateKind != 0;
+      if (wouldHaveDate != _dateIgnored) {
+        setState(() => _dateIgnored = wouldHaveDate);
+      }
+    }
     if (result.cleanTitle != _lastResult.cleanTitle ||
         result.startTime != _lastResult.startTime ||
         result.endTime != _lastResult.endTime ||
@@ -305,18 +324,14 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
       widget.onDismiss();
       return;
     }
-    await _appearController.animateWith(SpringSimulation(
-      SpringDescription(
-        mass: 1.0,
-        stiffness: AppTheme.glassSpringDismissStiffness,
-        damping: AppTheme.glassSpringDismissDamping *
-            2 *
-            math.sqrt(AppTheme.glassSpringDismissStiffness),
-      ),
-      _appearController.value,
+    // ONE exit for every pill: the same quick easeInCubic settle-down the global
+    // pill window uses (pill_window `_exit`), so the day/overview pill closes
+    // with the identical gesture — not the old dismiss spring.
+    await _appearController.animateTo(
       0.0,
-      0.0,
-    ));
+      duration: AppTheme.glassDismissDuration,
+      curve: Curves.easeInCubic,
+    );
     if (mounted) widget.onDismiss();
   }
 
@@ -334,11 +349,12 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
     HapticFeedback.lightImpact();
     _submitAnim.forward(from: 0);
 
-    final result = widget.core.parseInput(raw);
+    final result = widget.core.parseInput(raw, targeted: widget.targeted);
     widget.onSubmit(
         result.cleanTitle.isEmpty ? raw : result.cleanTitle, result);
 
     _controller.clear();
+    _dateIgnored = false;
     setState(() => _lastResult = const ParseResult());
     _controller.updateResult(const ParseResult());
     widget.notifier.clear();
@@ -463,17 +479,22 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
     );
   }
 
-  /// Calm right-side destination readout («Inbox», «Tomorrow 09:00»). Always
-  /// on in floating capture; in-app only when the text carries a date.
-  /// First-run floating pill whispers the rapid-dump chord alongside.
+  /// The calm right-side destination readout — ALWAYS shown once there is text.
+  /// It is the teacher of the one routing rule: a leading arrow makes it read as
+  /// a destination ("→ Inbox", "→ Wed · Jul 16", "→ Today 9:00"). A whisper
+  /// rides alongside: the rapid-dump chord on the first-run floating pill, or
+  /// "date stays here" when a targeted pill is keeping a typed date as text.
   Widget _destinationChip() {
-    final show = widget.destinationLabel != null &&
-        _controller.text.trim().isNotEmpty &&
-        (widget.floating || _lastResult.hasDate);
+    final show =
+        widget.destinationLabel != null && _controller.text.trim().isNotEmpty;
     final label = show ? widget.destinationLabel!(_lastResult) : null;
-    final whisper = show &&
-        widget.floating &&
-        FirstRunController.instance.hintsActive.value;
+    final String? whisper = !show
+        ? null
+        : (widget.targeted && _dateIgnored)
+            ? 'date stays here'
+            : (widget.floating && FirstRunController.instance.hintsActive.value)
+                ? 'Shift+Enter — keep going'
+                : null;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 180),
       switchInCurve: Curves.easeOutCubic,
@@ -486,20 +507,30 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // Leading arrow — "this goes to →". Fainter than the label.
+                  Text(
+                    '→ ',
+                    style: AppFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withOpacity(0.24),
+                      letterSpacing: -0.1,
+                    ),
+                  ),
                   Text(
                     label,
                     style: AppFonts.inter(
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
-                      color: Colors.white.withOpacity(0.38),
+                      color: Colors.white.withOpacity(0.42),
                       letterSpacing: -0.1,
                     ),
                   ),
-                  if (whisper)
+                  if (whisper != null)
                     Padding(
                       padding: const EdgeInsets.only(left: 10),
                       child: Text(
-                        'Shift+Enter — keep going',
+                        whisper,
                         style: AppFonts.inter(
                           fontSize: 10.5,
                           color: Colors.white.withOpacity(0.20),
@@ -531,8 +562,15 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
         final sy = AppTheme.glassSpringScaleFromY +
             (1.0 - AppTheme.glassSpringScaleFromY) * appearVal;
         final shadowFactor = appearVal.clamp(0.0, 1.0);
+        // Slide-up on enter / down on exit — the SAME rise the global pill window
+        // uses, so both pills share one gesture. Floating pins appearVal at 1.0,
+        // so its rise is 0 here (the overlay scene owns its translate). Translate
+        // is safe over the lens (only an animating Opacity blinks the backdrop).
+        final rise = (1.0 - shadowFactor) * AppTheme.glassEnterRise;
 
-        return Transform(
+        return Transform.translate(
+          offset: Offset(0, rise),
+          child: Transform(
             alignment: Alignment.center,
             transform: Matrix4.diagonal3Values(sx, sy, 1.0),
             // The text-hop rule wants filterQuality while a scale animates — but
@@ -640,7 +678,8 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
                 },
               ),
             ),
-          );
+          ),
+        );
       },
     );
   }
