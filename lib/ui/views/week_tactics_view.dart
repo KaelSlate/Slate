@@ -754,18 +754,24 @@ class _DayColumnState extends State<_DayColumn> {
           const moreH = 18.0;
 
           // The dragged card is hidden at its source — drop it from the base so
-          // it never shows twice, then splice the projected card back in where
-          // it WILL land. Identity marks it for the honey-haloed render.
-          final hiddenId = DragSession.instance.hiddenTaskId.value;
-          final base =
-              dayTasks.where((t) => t.id != hiddenId).toList();
+          // DO NOT filter the dragged task out. It stays as its own DragSource,
+          // which dims itself to 0 during the settle AND restores itself when the
+          // drop finishes (it listens to hiddenTaskId) — and it keeps its entry
+          // in DragCardRegistry so the flight lands ON it. Filtering it broke all
+          // three: the flight fell back to a wrong rect, and the card vanished
+          // until an unrelated rebuild.
+          //
+          // Splice the honey preview in ONLY when the task isn't already here —
+          // i.e. a cross-day drop. Same-day, the real (dimmed) card is the show.
+          final showPreview = preview != null &&
+              !dayTasks.any((t) => t.id == preview.projected.id);
 
           final unallocated = TaskState.orderUnallocated(
-              base.where((t) => t.startTime == null).toList());
-          final allocated = base.where((t) => t.startTime != null).toList()
+              dayTasks.where((t) => t.startTime == null).toList());
+          final allocated = dayTasks.where((t) => t.startTime != null).toList()
             ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
 
-          if (preview != null) {
+          if (showPreview) {
             if (preview.keepsTime) {
               allocated
                 ..add(preview.projected)
@@ -793,10 +799,10 @@ class _DayColumnState extends State<_DayColumn> {
           }
           // The incoming card must always be visible — never let the cap hide
           // the very thing the cursor is placing.
-          if (preview != null) fit = (fit + 1).clamp(0, total);
+          if (showPreview) fit = (fit + 1).clamp(0, total);
 
           bool isPreview(RustTask t) =>
-              preview != null && identical(t, preview.projected);
+              showPreview && identical(t, preview.projected);
 
           Widget realCard(RustTask task) => DragSource(
                 key: ValueKey(task.id),

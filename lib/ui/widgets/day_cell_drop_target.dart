@@ -92,24 +92,15 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return !_isSameDay(p) || p.task.startTime != null;
   }
 
-  /// The cell's own divider box, when it draws one (only when BOTH groups are
-  /// present). null → this cell has no divider and the wash must stand one in.
-  RenderBox? get _dividerBox {
-    final box = _dividerKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null || !box.attached || !box.hasSize) return null;
-    return box;
-  }
-
-  /// Global Y of the split — THE one source of truth. The hit-test reads it and
-  /// the wash derives its line from it, so the line you see is always the line
-  /// that decides. (They used to be computed apart: the hit-test from
-  /// settleTopOffset, the line at a flat 50% of the padded box — ~40-50px of
-  /// daylight between the boundary and its own picture.)
+  /// Global Y of the keep/clear boundary — a STABLE fraction of the cell, never
+  /// the live divider box. This is the fix for the flicker/teleport: reading the
+  /// divider made the boundary depend on the layout, but inserting the "show the
+  /// future" preview MOVES the divider (a timed group appears/vanishes), which
+  /// flipped the decision, which moved the preview, which moved the divider — a
+  /// feedback loop. A fixed fraction can't move, so the decision is rock-steady.
+  /// There is no drawn line to disagree with it; the incoming card's own time
+  /// (present above, gone below) is what tells you which half you're in.
   double _splitGlobalY(Rect r) {
-    final box = _dividerBox;
-    if (box != null) {
-      return box.localToGlobal(Offset.zero).dy + box.size.height / 2;
-    }
     final head = widget.settleTopOffset.clamp(0.0, r.height);
     return r.top + head + (r.height - head) * 0.5;
   }

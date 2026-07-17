@@ -218,19 +218,46 @@ void main() {
     expect(clear.projected.startTime, isNull);
   });
 
-  testWidgets('the split still decides keep vs clear at the divider', (tester) async {
-    final t = await makeTask('split truth', tue, startMin: 570);
-    await tester.pumpWidget(cellHarness(date: thu, dividerAt: 300));
-    await tester.pump();
+  testWidgets('the keep/clear split is a STABLE fraction, not the divider',
+      (tester) async {
+    // The anti-flicker guarantee: reading the live divider made the boundary
+    // move when the preview inserted a group, which flipped the decision, which
+    // moved the preview — a feedback loop. The split is now a fixed cell
+    // fraction, identical whether or not a divider is present.
+    final t = await makeTask('stable split', tue, startMin: 570);
+    // Fixed split = cellTop + settleTop + (cellH - settleTop) * 0.5.
+    const splitY = cellTop + settleTop + (cellH - settleTop) * 0.5;
 
-    final p = payloadFor(t, tue);
-    DragSession.instance.begin(p, const Offset(10, 10));
+    for (final dividerAt in [null, 120.0, 500.0]) {
+      await tester.pumpWidget(cellHarness(date: thu, dividerAt: dividerAt));
+      await tester.pump();
+      final p = payloadFor(t, tue);
+      DragSession.instance.begin(p, const Offset(10, 10));
+      expect(modeAt(p, splitY - 6), 'keep',
+          reason: 'above the fixed split (divider=$dividerAt)');
+      expect(modeAt(p, splitY + 6), 'clear',
+          reason: 'below the fixed split (divider=$dividerAt)');
+      DragSession.instance.debugReset();
+    }
+  });
 
-    // The boundary is the cell's real divider — above keeps, below clears.
-    // (This is what the old ~40-50px painted-line/hit-boundary drift broke;
-    // the split Y is now the single source both the mode and the settle use.)
-    expect(modeAt(p, cellTop + 250), 'keep', reason: 'above divider@300');
-    expect(modeAt(p, cellTop + 350), 'clear', reason: 'below divider@300');
+  test('EVIDENCE (bug 7): deleting refreshes the day notifier', () async {
+    final day = DateTime(2026, 9, 10);
+    final ms = day.millisecondsSinceEpoch;
+    await ts.createTask('m-a', ms);
+    await ts.createTask('m-b', ms);
+    final notifier = ts.tasksForDateNotifier(ms);
+    final mine = notifier.value.where((t) => t.title.startsWith('m-')).toList();
+    expect(mine.length, 2, reason: 'both created on the day');
+
+    final a = ts.tasks.firstWhere((t) => t.title == 'm-a');
+    ts.deleteTask(a);
+    // If this fails, bug 7 is a DATA/notifier bug. If it passes, the delete
+    // reaches the notifier correctly and the staleness is in the render layer.
+    expect(notifier.value.any((t) => t.title == 'm-a'), isFalse,
+        reason: 'the deleted one is gone from the notifier');
+    expect(notifier.value.any((t) => t.title == 'm-b'), isTrue,
+        reason: 'the OTHER one survives (bug 7: it wrongly vanished)');
   });
 
   testWidgets('the preview card RENDERS the future — time shown, or gone',

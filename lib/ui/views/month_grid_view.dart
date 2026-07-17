@@ -578,15 +578,18 @@ class _MonthPageState extends State<_MonthPage> {
       valueListenable: DragSession.instance.hover,
       builder: (context, _, _) {
         final preview = DropFuture.forDate(date);
-        final hiddenId = DragSession.instance.hiddenTaskId.value;
-        final base = dayTasks.where((t) => t.id != hiddenId).toList();
+        // Keep the dragged card in the list (it dims + restores itself and stays
+        // in DragCardRegistry so the flight lands on it). Splice the honey
+        // preview in ONLY for a cross-day drop, where the task isn't here yet.
+        final showPreview = preview != null &&
+            !dayTasks.any((t) => t.id == preview.projected.id);
 
         final unallocated = TaskState.orderUnallocated(
-            base.where((t) => t.startTime == null).toList());
-        final allocated = base.where((t) => t.startTime != null).toList()
+            dayTasks.where((t) => t.startTime == null).toList());
+        final allocated = dayTasks.where((t) => t.startTime != null).toList()
           ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
 
-        if (preview != null) {
+        if (showPreview) {
           if (preview.keepsTime) {
             allocated
               ..add(preview.projected)
@@ -597,12 +600,17 @@ class _MonthPageState extends State<_MonthPage> {
         }
         final total = unallocated.length + allocated.length;
         // The incoming card is always shown — never capped away mid-drop.
-        final cap = preview != null ? 3 : 2;
+        final cap = showPreview ? 3 : 2;
 
         bool isPreview(RustTask t) =>
-            preview != null && identical(t, preview.projected);
+            showPreview && identical(t, preview.projected);
 
+        // KEY by task id — without it the Column reconciles by POSITION, so
+        // deleting the top of two made the survivor reuse the deleted card's
+        // dying (fading) element and vanish with it until a full rebuild (a
+        // screen switch). The week list was already keyed; the month wasn't.
         Widget realCard(RustTask task) => Padding(
+              key: ValueKey('m-${task.id}'),
               padding: const EdgeInsets.only(bottom: 2),
               child: DragSource(
                 task: task,

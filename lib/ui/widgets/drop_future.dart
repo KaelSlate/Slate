@@ -74,6 +74,9 @@ class DropFuture {
   /// one being placed. IgnorePointer — it is a preview, never a target.
   Widget card({EdgeInsets margin = const EdgeInsets.only(bottom: 4)}) =>
       IgnorePointer(
+        // Stable key so a list reconciles the preview against real rows by
+        // identity, not position, as it hops groups mid-drag.
+        key: ValueKey('future-${projected.id}'),
         child: Padding(
           padding: margin,
           child: _LandingHalo(
