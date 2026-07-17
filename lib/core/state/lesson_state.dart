@@ -33,13 +33,15 @@ class Lesson {
 /// House voice: thing — em-dash — lowercase outcome. Matches the lines the app
 /// already speaks ('Shift+Enter — keep going', 'date stays here').
 class Lessons {
-  static const zoom = Lesson(
-      'zoom', LessonKind.invite, 'Open a day — click it.');
+  // The signature spatial gesture, and the one thing no one discovers on their
+  // own: a day cell has no pointer cursor (manifest law — no I-beam outside a
+  // text field), so nothing hints it is even zoomable. One quiet line teaches
+  // the whole move, both directions, and retires the instant the wheel is used.
+  static const zoom = Lesson('zoom', LessonKind.invite,
+      'Ctrl + scroll a day — zoom in, and back out.');
   static const drag = Lesson(
       'drag', LessonKind.invite, 'Tasks move — drag one to any day.');
 
-  static const zoomKey = Lesson('zoomKey', LessonKind.accelerator,
-      'Ctrl+scroll — zoom without clicking.');
   static const backKey =
       Lesson('backKey', LessonKind.accelerator, 'Esc — back out.');
   static const captureKey = Lesson('captureKey', LessonKind.accelerator,
@@ -55,7 +57,7 @@ class Lessons {
   // bug this replaces: the old whisper read a first-run flag that only exists in
   // the main isolate, so it was always false and never once appeared.
 
-  static const all = [zoom, drag, zoomKey, backKey, captureKey, inboxKey, viewKey];
+  static const all = [zoom, drag, backKey, captureKey, inboxKey, viewKey];
 }
 
 /// The teaching ladder. One slot, at most one line on screen, ever.
@@ -63,11 +65,8 @@ class Lessons {
 /// Replaces the old single `hintsActive` bool, which gated EVERY hint on the
 /// first capture: catch one thought into the inbox and — in the same instant,
 /// forever — the app stopped teaching zoom, drag and Shift+Enter. Each lesson
-/// now retires on its OWN mastery.
-///
-/// (FirstRunController.hintsActive still lives, but only for what it was always
-/// right about: the empty-day/empty-week ghost silhouettes, which belong to the
-/// pre-first-capture state and nothing else.)
+/// now retires on its OWN mastery. (The grey first-run ghost silhouettes it also
+/// drove are gone too — the real demo seed teaches the anatomy by being real.)
 class LessonState extends ChangeNotifier {
   LessonState._();
   static final LessonState instance = LessonState._();

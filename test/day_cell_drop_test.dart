@@ -8,6 +8,7 @@ import 'package:slate/core/engine/slate_core_bridge.dart';
 import 'package:slate/core/interaction/drag_session.dart';
 import 'package:slate/core/state/task_state.dart';
 import 'package:slate/ui/widgets/day_cell_drop_target.dart';
+import 'package:slate/ui/widgets/drop_future.dart';
 
 /// The week/month day cell as a drop target, against the REAL engine DLL.
 ///
@@ -186,7 +187,6 @@ void main() {
     final p = payloadFor(t, thu);
     DragSession.instance.begin(p, const Offset(10, 10));
     expect(modeAt(p, cellTop + 200), 'reject');
-    expect(DragSession.instance.hover.value?.badgeText, 'Already here');
 
     DragSession.instance.drop();
     await tester.pump();
@@ -195,48 +195,68 @@ void main() {
     expect(after.startTime, 570, reason: 'nothing moved');
   });
 
-  testWidgets('the badge names the outcome, not the mechanic', (tester) async {
-    final t = await makeTask('badge me', tue, startMin: 570);
+  testWidgets('the preview SHOWS the future — card with time, or without',
+      (tester) async {
+    final t = await makeTask('show me', tue, startMin: 570);
     await tester.pumpWidget(cellHarness(date: thu, dividerAt: 300));
     await tester.pump();
 
     final p = payloadFor(t, tue);
     DragSession.instance.begin(p, const Offset(10, 10));
 
+    // Above the divider → keep: the projected card carries its time.
     expect(modeAt(p, cellTop + 200), 'keep');
-    expect(DragSession.instance.hover.value?.badgeText, '09:30');
+    final keep = DropFuture.forDate(thu)!;
+    expect(keep.keepsTime, isTrue);
+    expect(keep.projected.startTime, 570, reason: 'the card lands WITH 09:30');
 
+    // Below → clear: the projected card has no time, and no badge says so —
+    // the absence of the time on the card IS the message.
     expect(modeAt(p, cellTop + 400), 'clear');
-    expect(DragSession.instance.hover.value?.badgeText, 'No time');
+    final clear = DropFuture.forDate(thu)!;
+    expect(clear.keepsTime, isFalse);
+    expect(clear.projected.startTime, isNull);
   });
 
-  testWidgets(
-      'REGRESSION: with no divider, the line you see IS the line that decides',
-      (tester) async {
+  testWidgets('the split still decides keep vs clear at the divider', (tester) async {
     final t = await makeTask('split truth', tue, startMin: 570);
-    // dividerAt: null — the cell has one group, so the wash stands a line in.
-    await tester.pumpWidget(cellHarness(date: thu, dividerAt: null));
+    await tester.pumpWidget(cellHarness(date: thu, dividerAt: 300));
     await tester.pump();
 
     final p = payloadFor(t, tue);
-    DragSession.instance.begin(p, Offset(cellLeft + cellW / 2, cellTop + 200));
+    DragSession.instance.begin(p, const Offset(10, 10));
+
+    // The boundary is the cell's real divider — above keeps, below clears.
+    // (This is what the old ~40-50px painted-line/hit-boundary drift broke;
+    // the split Y is now the single source both the mode and the settle use.)
+    expect(modeAt(p, cellTop + 250), 'keep', reason: 'above divider@300');
+    expect(modeAt(p, cellTop + 350), 'clear', reason: 'below divider@300');
+  });
+
+  testWidgets('the preview card RENDERS the future — time shown, or gone',
+      (tester) async {
+    final t = await makeTask('render me', tue, startMin: 570); // 09:30
+    final p = payloadFor(t, tue);
+    DragSession.instance.begin(p, const Offset(10, 10));
+
+    // Keep: the real card, carrying its time — the badge/grey wash is gone; the
+    // time ON the card is the whole message.
+    final keep = DropFuture(t, true);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: keep.card())));
     await tester.pump();
+    expect(find.text('render me'), findsOneWidget);
+    expect(find.text('09:30'), findsOneWidget, reason: 'lands WITH its time');
 
-    final line = find.byKey(DayCellDropTarget.splitLineKey);
-    expect(line, findsOneWidget, reason: 'no divider → the wash draws one');
-    final lineY = tester.getCenter(line).dy;
-
-    // The property that was broken: the drawn line and the hit boundary were
-    // computed apart (settleTopOffset-based vs a flat 50% of the padded box).
-    expect(modeAt(p, lineY - 4), 'keep',
-        reason: 'just above the visible line = keep the time');
-    expect(modeAt(p, lineY + 4), 'clear',
-        reason: 'just below the visible line = drop the time');
-
-    // And it is where the fallback formula says, not at a flat 50%.
-    const expected = cellTop + settleTop + (cellH - settleTop) * 0.5;
-    expect(lineY, closeTo(expected, 1.0));
-    expect(lineY, isNot(closeTo(cellTop + cellH * 0.5, 1.0)),
-        reason: 'the flat-50% line was the lie');
+    // Clear: the same card, no time — absence is the message, no "No time" badge.
+    final cleared = RustTask(
+      id: t.id, title: t.title, isCompleted: t.isCompleted,
+      createdAt: t.createdAt, startTime: null, endTime: null,
+      priority: t.priority, tags: t.tags,
+    );
+    await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: DropFuture(cleared, false).card())));
+    await tester.pump();
+    expect(find.text('render me'), findsOneWidget);
+    expect(find.text('09:30'), findsNothing, reason: 'the time is gone');
   });
 }

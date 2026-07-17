@@ -414,12 +414,13 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     _inboxPulseCtrl.forward(from: 0.0);
   }
 
-  /// Clicked a day open: the invite is spent, and now — and only now — is the
-  /// moment the keyboard route means anything. The menu-shortcut pattern.
+  /// Entered a day with the mouse. This does NOT retire the zoom invite —
+  /// clicking teaches nothing about the wheel gesture that invite is about. It
+  /// only teaches the keyboard way back out, once: the menu-shortcut pattern.
   void _enterDayByClick() {
-    final firstTime = !LessonState.instance.isLearned(Lessons.zoom.id);
-    LessonState.instance.learn(Lessons.zoom.id);
-    if (firstTime) LessonState.instance.offer(Lessons.zoomKey);
+    if (!LessonState.instance.isLearned(Lessons.backKey.id)) {
+      LessonState.instance.offer(Lessons.backKey);
+    }
   }
 
   void _toggleInbox() {
@@ -479,10 +480,8 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
         }
       }
 
-      // Ctrl+scroll IS the zoom — both the invite and its keyboard route are
-      // spent the moment it works once, in either direction.
+      // The wheel IS the zoom lesson — one use, either direction, retires it.
       LessonState.instance.learn(Lessons.zoom.id);
-      LessonState.instance.learn(Lessons.zoomKey.id);
       if (event.scrollDelta.dy > 0 &&
           StaircaseState.currentLevel == StaircaseLevel.day) {
         LessonState.instance.learn(Lessons.backKey.id);

@@ -8,6 +8,7 @@ import '../../core/state/task_state.dart';
 import '../../core/interaction/drag_session.dart';
 import '../widgets/hover_task_card.dart';
 import '../widgets/drag_source.dart';
+import '../widgets/drop_future.dart';
 import '../widgets/day_cell_drop_target.dart';
 import '../widgets/desktop_scroll_wrapper.dart';
 
@@ -568,6 +569,104 @@ class _MonthPageState extends State<_MonthPage> {
     );
   }
 
+  /// The month cell's task rows: timed → divider → untimed, capped at 2, with
+  /// the live drop preview spliced into its group ("show the future" — the card
+  /// lands where it will land, with or without its time; no wash, no badge).
+  Widget _buildMonthTaskList(
+      List<RustTask> dayTasks, DateTime date, GlobalKey dividerKey) {
+    return ValueListenableBuilder<DropHover?>(
+      valueListenable: DragSession.instance.hover,
+      builder: (context, _, _) {
+        final preview = DropFuture.forDate(date);
+        final hiddenId = DragSession.instance.hiddenTaskId.value;
+        final base = dayTasks.where((t) => t.id != hiddenId).toList();
+
+        final unallocated = TaskState.orderUnallocated(
+            base.where((t) => t.startTime == null).toList());
+        final allocated = base.where((t) => t.startTime != null).toList()
+          ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+
+        if (preview != null) {
+          if (preview.keepsTime) {
+            allocated
+              ..add(preview.projected)
+              ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+          } else {
+            unallocated.insert(0, preview.projected);
+          }
+        }
+        final total = unallocated.length + allocated.length;
+        // The incoming card is always shown — never capped away mid-drop.
+        final cap = preview != null ? 3 : 2;
+
+        bool isPreview(RustTask t) =>
+            preview != null && identical(t, preview.projected);
+
+        Widget realCard(RustTask task) => Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: DragSource(
+                task: task,
+                kind: DragSourceKind.dayCellCard,
+                sourceDay: date,
+                sourceInsets: const EdgeInsets.only(bottom: 4),
+                child: HoverTaskCard(
+                  task: task,
+                  compact: true,
+                  enablePeek: false,
+                  onTap: () {
+                    widget.onToggleTask?.call(task);
+                    setState(() {});
+                  },
+                  onDelete: () => widget.taskState?.deleteTask(task),
+                  onEditTitle: (val) =>
+                      widget.taskState?.updateTask(task.copyWith(title: val)),
+                ),
+              ),
+            );
+
+        Widget emit(RustTask t) => isPreview(t)
+            ? preview!.card(margin: const EdgeInsets.only(bottom: 2))
+            : realCard(t);
+
+        final items = <Widget>[];
+        var count = 0;
+        for (final t in allocated) {
+          if (count >= cap) break;
+          items.add(emit(t));
+          count++;
+        }
+        if (unallocated.isNotEmpty && allocated.isNotEmpty && count < cap) {
+          items.add(KeyedSubtree(
+              key: dividerKey, child: const _PremiumMiniDivider()));
+        }
+        for (final t in unallocated) {
+          if (count >= cap) break;
+          items.add(emit(t));
+          count++;
+        }
+        final hiddenCount = total - count;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ...items,
+            if (hiddenCount > 0)
+              IgnorePointer(
+                child: Text(
+                  '+$hiddenCount more',
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 8.5,
+                    color: Colors.white.withOpacity(0.22),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
   Widget _buildDayCell(int gridIndex, int day, DateTime date, bool isToday,
       bool isPast, List<RustTask> dayTasks) {
     final isHovered = _hoveredIndex == gridIndex;
@@ -713,73 +812,8 @@ class _MonthPageState extends State<_MonthPage> {
                               child: ClipRect(
                                 child: SingleChildScrollView(
                                   physics: const NeverScrollableScrollPhysics(),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      ...() {
-                                        // Timed first (earliest on top), then the unscheduled pool.
-                                        final unallocated = TaskState.orderUnallocated(
-                                            dayTasks.where((t) => t.startTime == null).toList());
-                                        final allocated = dayTasks.where((t) => t.startTime != null).toList()
-                                          ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
-                                        final List<Widget> items = [];
-
-                                        Widget buildCard(RustTask task) => Padding(
-                                              padding: const EdgeInsets.only(bottom: 2),
-                                              child: DragSource(
-                                                task: task,
-                                                kind: DragSourceKind.dayCellCard,
-                                                sourceDay: date,
-                                                sourceInsets: const EdgeInsets.only(bottom: 4),
-                                                child: HoverTaskCard(
-                                                  task: task,
-                                                  compact: true,
-                                                  // Cell-level day peek covers the full titles here.
-                                                  enablePeek: false,
-                                                  onTap: () {
-                                                    widget.onToggleTask?.call(task);
-                                                    setState(() {});
-                                                  },
-                                                  onDelete: () => widget.taskState?.deleteTask(task),
-                                                  onEditTitle: (val) => widget.taskState?.updateTask(task.copyWith(title: val)),
-                                                ),
-                                              ),
-                                            );
-
-                                        int count = 0;
-                                        for (final t in allocated) {
-                                          if (count >= 2) break;
-                                          items.add(buildCard(t));
-                                          count++;
-                                        }
-
-                                        if (unallocated.isNotEmpty && allocated.isNotEmpty && count < 2) {
-                                          items.add(KeyedSubtree(
-                                              key: dividerKey,
-                                              child: const _PremiumMiniDivider()));
-                                        }
-
-                                        for (final t in unallocated) {
-                                          if (count >= 2) break;
-                                          items.add(buildCard(t));
-                                          count++;
-                                        }
-
-                                        return items;
-                                      }(),
-                                      if (dayTasks.length > 2)
-                                        IgnorePointer(
-                                          child: Text(
-                                            '+${dayTasks.length - 2} more',
-                                            style: TextStyle(
-                                              fontFamily: 'Inter',
-                                              fontSize: 8.5,
-                                              color: Colors.white.withOpacity(0.22),
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
+                                  child: _buildMonthTaskList(
+                                      dayTasks, date, dividerKey),
                                 ),
                               ),
                             ),

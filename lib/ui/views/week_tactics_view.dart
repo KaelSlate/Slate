@@ -5,11 +5,11 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/engine/slate_core_bridge.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
-import '../../core/state/first_run.dart';
 import '../../core/state/task_state.dart';
 import '../../core/interaction/drag_session.dart';
 import '../widgets/hover_task_card.dart';
 import '../widgets/drag_source.dart';
+import '../widgets/drop_future.dart';
 import '../widgets/day_cell_drop_target.dart';
 import '../widgets/desktop_scroll_wrapper.dart';
 import '../widgets/quiet_progress_ring.dart';
@@ -740,93 +740,130 @@ class _DayColumnState extends State<_DayColumn> {
   // Timed tasks come FIRST, earliest on top (your next thing is what you see),
   // then the divider, then the unscheduled pool.
   Widget _buildTaskList(BuildContext context, List<RustTask> dayTasks) {
-    return LayoutBuilder(builder: (context, constraints) {
-      const itemH = 38.0; // compact HoverTaskCard: fixed 34 + 4 bottom margin
-      const dividerH = 17.0; // _PremiumMiniDivider: 8 pad + '◇' glyph row
-      const moreH = 18.0;
+    // Rebuild as the drag crosses this cell's divider / moves between days, so
+    // the incoming card reflows to its true landing spot in real time.
+    return ValueListenableBuilder<DropHover?>(
+      valueListenable: DragSession.instance.hover,
+      builder: (context, _, _) {
+        final cellDate =
+            DateTime.fromMillisecondsSinceEpoch(widget.cell.dateTimestamp);
+        final preview = DropFuture.forDate(cellDate);
+        return LayoutBuilder(builder: (context, constraints) {
+          const itemH = 38.0; // compact HoverTaskCard: fixed 34 + 4 bottom margin
+          const dividerH = 17.0; // _PremiumMiniDivider: 8 pad + '◇' glyph row
+          const moreH = 18.0;
 
-      final unallocated = TaskState.orderUnallocated(
-          dayTasks.where((t) => t.startTime == null).toList());
-      final allocated = dayTasks.where((t) => t.startTime != null).toList()
-        ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
-      final total = unallocated.length + allocated.length;
+          // The dragged card is hidden at its source — drop it from the base so
+          // it never shows twice, then splice the projected card back in where
+          // it WILL land. Identity marks it for the honey-haloed render.
+          final hiddenId = DragSession.instance.hiddenTaskId.value;
+          final base =
+              dayTasks.where((t) => t.id != hiddenId).toList();
 
-      // First run: an empty day shows its anatomy as ghosts (timed above the
-      // divider, someday below) instead of a void — until the first capture.
-      if (total == 0) return const _GhostDayStructure();
-      final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
+          final unallocated = TaskState.orderUnallocated(
+              base.where((t) => t.startTime == null).toList());
+          final allocated = base.where((t) => t.startTime != null).toList()
+            ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
 
-      final avail = constraints.maxHeight - 12; // vertical padding
-      var fit =
-          ((avail - (bothGroups ? dividerH : 0)) / itemH).floor().clamp(0, total);
-      if (fit < total) {
-        fit = ((avail - moreH - (bothGroups ? dividerH : 0)) / itemH)
-            .floor()
-            .clamp(0, total);
-      }
-      final hiddenCount = total - fit;
+          if (preview != null) {
+            if (preview.keepsTime) {
+              allocated
+                ..add(preview.projected)
+                ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+            } else {
+              unallocated.insert(0, preview.projected);
+            }
+          }
+          final total = unallocated.length + allocated.length;
 
-      Widget buildCard(RustTask task) => DragSource(
-            key: ValueKey(task.id),
-            task: task,
-            kind: DragSourceKind.dayCellCard,
-            sourceDay: DateTime.fromMillisecondsSinceEpoch(
-                widget.cell.dateTimestamp),
-            sourceInsets: const EdgeInsets.only(bottom: 4),
-            child: HoverTaskCard(
-              task: task,
-              compact: true,
-              // Week is an overview — no hover peek; click the day to read/act.
-              enablePeek: false,
-              onTap: () => widget.onToggleTask(task),
-              onDelete: () => widget.onDeleteTask(task),
-              onEditTitle: (val) {
-                widget.taskState?.updateTask(task.copyWith(title: val));
-              },
+          // An empty column is calm — blank, with the hover «+» as its quiet
+          // affordance. The anatomy (timed / untimed / the divider) is taught by
+          // the REAL seeded tasks a new user can touch, not by grey fake rows.
+          if (total == 0) return const SizedBox.shrink();
+          final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
+
+          final avail = constraints.maxHeight - 12; // vertical padding
+          var fit = ((avail - (bothGroups ? dividerH : 0)) / itemH)
+              .floor()
+              .clamp(0, total);
+          if (fit < total) {
+            fit = ((avail - moreH - (bothGroups ? dividerH : 0)) / itemH)
+                .floor()
+                .clamp(0, total);
+          }
+          // The incoming card must always be visible — never let the cap hide
+          // the very thing the cursor is placing.
+          if (preview != null) fit = (fit + 1).clamp(0, total);
+
+          bool isPreview(RustTask t) =>
+              preview != null && identical(t, preview.projected);
+
+          Widget realCard(RustTask task) => DragSource(
+                key: ValueKey(task.id),
+                task: task,
+                kind: DragSourceKind.dayCellCard,
+                sourceDay: cellDate,
+                sourceInsets: const EdgeInsets.only(bottom: 4),
+                child: HoverTaskCard(
+                  task: task,
+                  compact: true,
+                  // Week is an overview — no hover peek; click the day to act.
+                  enablePeek: false,
+                  onTap: () => widget.onToggleTask(task),
+                  onDelete: () => widget.onDeleteTask(task),
+                  onEditTitle: (val) {
+                    widget.taskState?.updateTask(task.copyWith(title: val));
+                  },
+                ),
+              );
+
+          Widget emit(RustTask t) =>
+              isPreview(t) ? preview!.card() : realCard(t);
+
+          final items = <Widget>[];
+          var count = 0;
+          for (final t in allocated) {
+            if (count >= fit) break;
+            items.add(emit(t));
+            count++;
+          }
+          if (bothGroups && count < fit) {
+            items.add(KeyedSubtree(
+                key: widget.dividerKey, child: const _PremiumMiniDivider()));
+          }
+          for (final t in unallocated) {
+            if (count >= fit) break;
+            items.add(emit(t));
+            count++;
+          }
+          final hiddenCount = total - count;
+
+          // ClipRect: belt-and-braces — whatever happens to card heights in the
+          // future, nothing may ever bleed past the day card's frame again.
+          return ClipRect(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ...items,
+                  if (hiddenCount > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4, bottom: 2),
+                      child: Text('+$hiddenCount more',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontFamily: 'Inter', fontSize: 9,
+                            color: Colors.white.withOpacity(0.3),
+                          )),
+                    ),
+                ],
+              ),
             ),
           );
-
-      final items = <Widget>[];
-      var count = 0;
-      for (final t in allocated) {
-        if (count >= fit) break;
-        items.add(buildCard(t));
-        count++;
-      }
-      if (bothGroups && count < fit) {
-        items.add(KeyedSubtree(
-            key: widget.dividerKey, child: const _PremiumMiniDivider()));
-      }
-      for (final t in unallocated) {
-        if (count >= fit) break;
-        items.add(buildCard(t));
-        count++;
-      }
-
-      // ClipRect: belt-and-braces — whatever happens to card heights in the
-      // future, nothing may ever bleed past the day card's frame again.
-      return ClipRect(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              ...items,
-              if (hiddenCount > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4, bottom: 2),
-                  child: Text('+$hiddenCount more',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontFamily: 'Inter', fontSize: 9,
-                        color: Colors.white.withOpacity(0.3),
-                      )),
-                ),
-            ],
-          ),
-        ),
-      );
-    });
+        });
+      },
+    );
   }
 }
 
@@ -930,73 +967,6 @@ class _HoverGlowBackground extends StatelessWidget {
           ],
         ],
       ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// GHOST DAY STRUCTURE — first-run silhouette of an empty day cell
-// ═══════════════════════════════════════════════════════════════════════════
-class _GhostDayStructure extends StatelessWidget {
-  const _GhostDayStructure();
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: FirstRunController.instance.hintsActive,
-      builder: (context, active, child) =>
-          active ? child! : const SizedBox.shrink(),
-      child: IgnorePointer(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _ghostRow('9:00 · a timed plan'),
-              const _PremiumMiniDivider(),
-              _ghostRow('a task for someday'),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _ghostRow(String text) {
-    return Container(
-      height: 34,
-      margin: const EdgeInsets.only(bottom: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.018),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-            color: Colors.white.withValues(alpha: 0.045), width: 0.5),
-      ),
-      child: Row(children: [
-        Container(
-          width: 16,
-          height: 16,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(
-                color: Colors.white.withValues(alpha: 0.08), width: 1),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Flexible(
-          child: Text(
-            text,
-            maxLines: 1,
-            overflow: TextOverflow.clip,
-            style: AppFonts.inter(
-              fontSize: 11,
-              color: Colors.white.withValues(alpha: 0.16),
-              letterSpacing: 0.1,
-            ),
-          ),
-        ),
-      ]),
     );
   }
 }

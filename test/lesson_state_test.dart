@@ -33,8 +33,8 @@ void main() {
     });
 
     test('a learned lesson can never be offered again', () {
-      ls.learn(Lessons.zoomKey.id);
-      ls.offer(Lessons.zoomKey);
+      ls.learn(Lessons.viewKey.id);
+      ls.offer(Lessons.viewKey);
       expect(ls.pushed, isNull);
     });
 
@@ -91,7 +91,7 @@ void main() {
     testWidgets('shows the zoom invite first, and nothing else with it',
         (tester) async {
       await pump(tester);
-      expect(find.textContaining('Open a day'), findsOneWidget);
+      expect(find.textContaining('Ctrl + scroll'), findsOneWidget);
       expect(find.textContaining('drag'), findsNothing,
           reason: 'ONE line — never a cheat-sheet');
     });
@@ -99,11 +99,11 @@ void main() {
     testWidgets('opening a day retires the invite and it never returns',
         (tester) async {
       await pump(tester);
-      expect(find.textContaining('Open a day'), findsOneWidget);
+      expect(find.textContaining('Ctrl + scroll'), findsOneWidget);
 
       ls.learn(Lessons.zoom.id);
       await pump(tester);
-      expect(find.textContaining('Open a day'), findsNothing);
+      expect(find.textContaining('Ctrl + scroll'), findsNothing);
     });
 
     testWidgets('drag is only invited AFTER a day has been opened',
@@ -125,13 +125,13 @@ void main() {
 
     testWidgets('an accelerator outranks a live invite', (tester) async {
       await pump(tester);
-      expect(find.textContaining('Open a day'), findsOneWidget);
+      expect(find.textContaining('Ctrl + scroll'), findsOneWidget);
 
       ls.offer(Lessons.inboxKey);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.textContaining('opens the inbox'), findsOneWidget);
-      expect(find.textContaining('Open a day'), findsNothing,
+      expect(find.textContaining('Ctrl + scroll'), findsNothing,
           reason: 'still one line');
     });
 
@@ -139,12 +139,12 @@ void main() {
         (tester) async {
       StaircaseState.isWelcoming = true;
       await pump(tester);
-      expect(find.textContaining('Open a day'), findsNothing);
+      expect(find.textContaining('Ctrl + scroll'), findsNothing);
 
       StaircaseState.isWelcoming = false;
       StaircaseState.isComposingTask = true;
       await pump(tester);
-      expect(find.textContaining('Open a day'), findsNothing,
+      expect(find.textContaining('Ctrl + scroll'), findsNothing,
           reason: 'a pill is open — do not talk over it');
     });
 
@@ -152,7 +152,7 @@ void main() {
         (tester) async {
       StaircaseState.currentLevel = StaircaseLevel.day;
       await pump(tester);
-      expect(find.textContaining('Open a day'), findsNothing);
+      expect(find.textContaining('Ctrl + scroll'), findsNothing);
     });
 
     testWidgets('an accelerator expires on its own', (tester) async {
