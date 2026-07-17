@@ -1755,7 +1755,14 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
                     ? null
                     : TimelineLanePrefs.of(g.task.id))
         ];
-        final rowIndex = TimelineMath.assignLanes(spans, gap: 0);
+        
+        int? pinnedIndex;
+        if (freeze) {
+          final resizingId = _resizingTask!.id;
+          final idx = geoms.indexWhere((g) => g.task.id == resizingId);
+          if (idx != -1) pinnedIndex = idx;
+        }
+        final rowIndex = TimelineMath.assignLanes(spans, gap: 0, pinnedIndex: pinnedIndex);
         // Remember each row so the next resize freezes from this compact layout;
         // prune tasks outside the window (row is layout, not data).
         final laneIds = <String>{};

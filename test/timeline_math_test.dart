@@ -143,4 +143,34 @@ void main() {
           TimelineMath.laneNearest(existing, probe, 3, maxLanes: 1), 0);
     });
   });
+
+  group('pinnedIndex (resize stability)', () {
+    test('pinned span keeps its lane even if it means bumping a leftmost span', () {
+      // Scenario: A and B are touching on lane 0.
+      // B resizes left, overlapping A. B is pinned to lane 0.
+      // A (leftmost) should be bumped to lane 1, B keeps lane 0.
+      final spans = [
+        const LaneSpan(1100, 100, pref: 0, id: 'A'),
+        const LaneSpan(1150, 150, pref: 0, id: 'B'), // Resized left, overlaps A
+      ];
+      // B is pinnedIndex = 1
+      final lanes = TimelineMath.assignLanes(spans, gap: 0, pinnedIndex: 1);
+      
+      expect(lanes[1], 0); // B keeps lane 0
+      expect(lanes[0], 1); // A is bumped to lane 1
+    });
+
+    test('pinned span does not bump a non-overlapping span', () {
+      // Scenario: A and B don't overlap, but B is pinned to lane 0.
+      final spans = [
+        const LaneSpan(1100, 100, pref: 0, id: 'A'),
+        const LaneSpan(1250, 150, pref: 0, id: 'B'),
+      ];
+      // B is pinnedIndex = 1
+      final lanes = TimelineMath.assignLanes(spans, gap: 0, pinnedIndex: 1);
+      
+      expect(lanes[1], 0); // B keeps lane 0
+      expect(lanes[0], 0); // A keeps lane 0, no overlap
+    });
+  });
 }

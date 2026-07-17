@@ -38,24 +38,50 @@ class TimelineMath {
   /// (equal left → wider first). A span with a [LaneSpan.pref] takes that lane
   /// when it's free for its extent, else falls back to first-fit — this is
   /// what makes a user-chosen lane stick after the drop.
-  static List<int> assignLanes(List<LaneSpan> spans, {double gap = 5.0}) {
+  static List<int> assignLanes(List<LaneSpan> spans, {double gap = 5.0, int? pinnedIndex}) {
     final rowRight = <double>[];
     final lanes = List<int>.filled(spans.length, 0);
+
+    int? pinLane;
+    double pinL = 0, pinR = 0;
+    if (pinnedIndex != null && pinnedIndex >= 0 && pinnedIndex < spans.length) {
+      final s = spans[pinnedIndex];
+      final p = s.pref;
+      if (p != null && p >= 0) {
+        pinLane = p;
+        pinL = s.left;
+        pinR = s.left + s.width;
+        lanes[pinnedIndex] = p;
+        while (rowRight.length <= p) {
+          rowRight.add(-1.0e12);
+        }
+      }
+    }
+
     bool free(int r, double left) => r >= rowRight.length || left >= rowRight[r] + gap;
+    
+    bool pinnedFree(int r, double left, double width) {
+      if (r != pinLane) return true;
+      return left >= pinR + gap || pinL >= left + width + gap;
+    }
+
     for (var i = 0; i < spans.length; i++) {
+      if (i == pinnedIndex && pinLane != null) continue;
+      
       final g = spans[i];
       var lane = -1;
       final p = g.pref;
-      if (p != null && p >= 0 && free(p, g.left)) lane = p;
+      if (p != null && p >= 0 && free(p, g.left) && pinnedFree(p, g.left, g.width)) {
+        lane = p;
+      }
       if (lane == -1) {
-        for (var r = 0; r < rowRight.length; r++) {
-          if (free(r, g.left)) {
+        for (var r = 0; ; r++) {
+          if (free(r, g.left) && pinnedFree(r, g.left, g.width)) {
             lane = r;
             break;
           }
         }
       }
-      if (lane == -1) lane = rowRight.length;
       while (rowRight.length <= lane) {
         rowRight.add(-1.0e12);
       }
