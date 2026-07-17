@@ -34,60 +34,106 @@ class TimelineMath {
   }
 
   /// Greedy lane assignment — THE single source of truth shared by the block
-  /// layer and the drop ghost. [spans] must already be sorted left-to-right
-  /// (equal left → wider first). A span with a [LaneSpan.pref] takes that lane
-  /// when it's free for its extent, else falls back to first-fit — this is
-  /// what makes a user-chosen lane stick after the drop.
+  /// layer and the drop ghost.
+  /// 
+  /// The algorithm is "Sticky & Compacting" (Apple-level UX):
+  /// 1. Processes tasks by their preferred lane first (giving manipulated blocks priority).
+  /// 2. Tries to pack them into lower rows first (auto-compacting).
+  /// 3. Falls back to higher rows if blocked.
+  /// Uses true interval overlap tracking rather than simple left-to-right sweep.
   static List<int> assignLanes(List<LaneSpan> spans, {double gap = 5.0, int? pinnedIndex}) {
-    final rowRight = <double>[];
     final lanes = List<int>.filled(spans.length, 0);
+    final laneIntervals = <List<_Interval>>[];
 
-    int? pinLane;
-    double pinL = 0, pinR = 0;
-    if (pinnedIndex != null && pinnedIndex >= 0 && pinnedIndex < spans.length) {
-      final s = spans[pinnedIndex];
-      final p = s.pref;
-      if (p != null && p >= 0) {
-        pinLane = p;
-        pinL = s.left;
-        pinR = s.left + s.width;
-        lanes[pinnedIndex] = p;
-        while (rowRight.length <= p) {
-          rowRight.add(-1.0e12);
+    bool isFree(int r, double left, double width) {
+      if (r >= laneIntervals.length) return true;
+      final right = left + width;
+      for (final inv in laneIntervals[r]) {
+        // Overlap condition: left < inv.right + gap && inv.left < right + gap
+        if (left < inv.right + gap && inv.left < right + gap) {
+          return false;
         }
       }
+      return true;
     }
 
-    bool free(int r, double left) => r >= rowRight.length || left >= rowRight[r] + gap;
-    
-    bool pinnedFree(int r, double left, double width) {
-      if (r != pinLane) return true;
-      return left >= pinR + gap || pinL >= left + width + gap;
-    }
-
-    for (var i = 0; i < spans.length; i++) {
-      if (i == pinnedIndex && pinLane != null) continue;
-      
-      final g = spans[i];
-      var lane = -1;
-      final p = g.pref;
-      if (p != null && p >= 0 && free(p, g.left) && pinnedFree(p, g.left, g.width)) {
-        lane = p;
+    void place(int i, int r) {
+      lanes[i] = r;
+      while (laneIntervals.length <= r) {
+        laneIntervals.add([]);
       }
-      if (lane == -1) {
-        for (var r = 0; ; r++) {
-          if (free(r, g.left) && pinnedFree(r, g.left, g.width)) {
-            lane = r;
+      laneIntervals[r].add(_Interval(spans[i].left, spans[i].left + spans[i].width));
+    }
+
+    // Determine processing order
+    final order = List<int>.generate(spans.length, (i) => i);
+    order.sort((a, b) {
+      // 1. Pinned always first
+      if (a == pinnedIndex) return -1;
+      if (b == pinnedIndex) return 1;
+
+      final spanA = spans[a];
+      final spanB = spans[b];
+
+      // 2. By pref (ascending, nulls last)
+      final prefA = spanA.pref ?? 999999;
+      final prefB = spanB.pref ?? 999999;
+      final byPref = prefA.compareTo(prefB);
+      if (byPref != 0) return byPref;
+
+      // 3. By left
+      final byLeft = spanA.left.compareTo(spanB.left);
+      if (byLeft != 0) return byLeft;
+
+      // 4. By id (stable)
+      final idA = spanA.id;
+      final idB = spanB.id;
+      if (idA != null && idB != null) {
+        return idA.compareTo(idB);
+      }
+      return 0;
+    });
+
+    for (final i in order) {
+      final g = spans[i];
+      final p = g.pref;
+      var placedLane = -1;
+
+      if (i == pinnedIndex && p != null && p >= 0) {
+        // Pinned block MUST go to its pref.
+        placedLane = p;
+      } else {
+        // Try compacting: rows < pref
+        final limit = p != null && p >= 0 ? p : 0;
+        for (var r = 0; r < limit; r++) {
+          if (isFree(r, g.left, g.width)) {
+            placedLane = r;
             break;
           }
         }
+
+        // Try pref
+        if (placedLane == -1 && p != null && p >= 0) {
+          if (isFree(p, g.left, g.width)) {
+            placedLane = p;
+          }
+        }
+
+        // Fallback: first fit from max(0, p) upwards
+        if (placedLane == -1) {
+          final start = p != null && p >= 0 ? p + 1 : 0;
+          for (var r = start; ; r++) {
+            if (isFree(r, g.left, g.width)) {
+              placedLane = r;
+              break;
+            }
+          }
+        }
       }
-      while (rowRight.length <= lane) {
-        rowRight.add(-1.0e12);
-      }
-      rowRight[lane] = g.left + g.width;
-      lanes[i] = lane;
+
+      place(i, placedLane);
     }
+
     return lanes;
   }
 
@@ -145,6 +191,12 @@ class TimelineMath {
     if (ai != null && bi != null) return ai.compareTo(bi);
     return b.width.compareTo(a.width);
   }
+}
+
+class _Interval {
+  final double left;
+  final double right;
+  _Interval(this.left, this.right);
 }
 
 class LaneSpan {

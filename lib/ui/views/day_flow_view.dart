@@ -1751,9 +1751,7 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
           for (final g in geoms)
             LaneSpan(g.left, g.width,
                 id: g.task.id,
-                pref: (g.isGhost || !freeze)
-                    ? null
-                    : TimelineLanePrefs.of(g.task.id))
+                pref: g.isGhost ? null : TimelineLanePrefs.of(g.task.id))
         ];
         
         int? pinnedIndex;

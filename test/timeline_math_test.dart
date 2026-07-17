@@ -103,17 +103,19 @@ void main() {
       expect(TimelineMath.assignLanes(spans), [0, 1, 2]);
     });
 
-    test('pref keeps a block on its chosen lane (no width-flip)', () {
-      // Same left, probe wider → without a pref the sort would push it to
-      // lane 0 and bump the existing block down. pref=1 pins it below.
+    test('pref keeps a block on its chosen lane (unless it can compact)', () {
       final spans = [
-        const LaneSpan(0, 80), // existing
+        const LaneSpan(0, 80, pref: 0), // existing taking lane 0
         const LaneSpan(0, 200, pref: 1), // dropped here, user chose lane 1
       ]..sort(TimelineMath.laneOrder);
       final lanes = TimelineMath.assignLanes(spans);
       // Find the pref'd (wider) span's lane.
       final wide = spans.indexWhere((s) => s.width == 200);
-      expect(lanes[wide], 1);
+      expect(lanes[wide], 1); // Stays on 1 because 0 is occupied
+
+      // If lane 0 is entirely free, it compacts upwards
+      final spansCompacting = [const LaneSpan(0, 200, pref: 1)];
+      expect(TimelineMath.assignLanes(spansCompacting)[0], 0);
     });
   });
 
