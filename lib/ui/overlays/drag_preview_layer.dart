@@ -68,9 +68,14 @@ class _DragPreviewLayerState extends State<DragPreviewLayer>
 
   static const double _pillH = 34.0;
 
+  /// Carry it at the size it already is. A day-cell card is exactly the size of
+  /// the row it will land in, so a day→day flight now has NO resize at all —
+  /// it used to condense to 0.6× (clamped to ≥150), which made every carried
+  /// card the wrong size and every touchdown a jolt. Height still settles to the
+  /// compact row so a taller inbox card eases into its slot instead of snapping.
   Size _pillSize(DragPayload p) {
-    final w = (p.sourceGlobalRect.width * 0.6).clamp(150.0, 260.0);
-    return Size(w.toDouble(), _pillH);
+    final w = p.sourceGlobalRect.width.clamp(120.0, 360.0);
+    return Size(w, _pillH);
   }
 
   double get _formT => Curves.easeOutCubic.transform(_form.value);

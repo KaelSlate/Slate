@@ -495,6 +495,9 @@ class WeekTacticsViewState extends State<WeekTacticsView> {
                   taskState: widget.taskState,
                   settleTopOffset: 96,
                   settleHeight: 32,
+                  // One compact row = 34 card + 4 margin. The keep/clear
+                  // boundary counts these, so it lands on the real group gap.
+                  rowHeight: 38,
                   // Match _HoverGlowBackground's visible frame exactly —
                   // margin + radius — so the wash never pokes past the card.
                   highlightInsets:
@@ -855,6 +858,7 @@ class _DayColumnState extends State<_DayColumn> {
                   ...items,
                   if (hiddenCount > 0)
                     Padding(
+                      key: const ValueKey('more'), // stays a label, never morphs
                       padding: const EdgeInsets.only(top: 4, bottom: 2),
                       child: Text('+$hiddenCount more',
                           textAlign: TextAlign.center,

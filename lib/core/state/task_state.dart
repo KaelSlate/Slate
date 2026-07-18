@@ -146,12 +146,25 @@ class TaskState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// First-launch sample week — real engine tasks (FFI), deletable like any
-  /// task. Natural content (no "#demo" pollution): with/without time, one
-  /// done, priorities, tags, inbox thoughts — so day cells open ALREADY split
-  /// into scheduled/unscheduled and the progress ring lives. Seeded ONCE
-  /// (slate_seeded), only into an empty store, muted (not a user capture);
-  /// ids go to prefs so the tray's "Clear sample tasks" can sweep them.
+  /// First-launch sample week — real engine tasks (FFI), deletable, editable and
+  /// draggable like any other, and they STAY until the owner clears them.
+  ///
+  /// Deliberately NOT instructional ("drag me here", "tick this circle"): that
+  /// is the cheap tutorial-circus, and it dates the app the moment it's read.
+  /// The content is simply a plausible week, which teaches the anatomy by BEING
+  /// it — timed above the divider, unscheduled below, a couple of loose thoughts
+  /// in the inbox, one thing already done so the progress ring breathes. The
+  /// mechanics are the coach's job (see LessonState).
+  ///
+  /// One of several sets is drawn at random, so two people comparing screens
+  /// don't see the same seven chores. Every set keeps the SAME shape — 5 timed,
+  /// 2 unscheduled, 2 inbox, exactly 1 done, at least one !! and one tag — so the
+  /// first-run day always opens already split into its two halves.
+  ///
+  /// Seeded ONCE (slate_seeded), only into an EMPTY store (never on top of real
+  /// tasks), muted so it isn't mistaken for the user's first capture; ids go to
+  /// prefs so the tray's "Clear sample tasks" sweeps exactly these and nothing
+  /// else.
   @visibleForTesting
   Future<void> maybeSeedDemo() async {
     final prefs = await LocalPrefs.load();
@@ -159,52 +172,30 @@ class TaskState extends ChangeNotifier {
     FirstRunController.instance.muted = true;
     try {
       final now = DateTime.now();
-      final today = DateTime(now.year, now.month, now.day);
       final ids = <String>[];
-      RustTask timed(String title, int dayOffset, int start, int end,
-          {int priority = 0, List<String> tags = const []}) {
-        final t = core.createTaskEx(
-          title: title,
-          dayTs: DateTime(now.year, now.month, now.day + dayOffset)
-              .millisecondsSinceEpoch,
-          startTime: start,
-          endTime: end,
-          priority: priority,
-          tags: tags,
-        );
-        ids.add(t.id);
-        return t;
-      }
+      final set = _demoSets[Random().nextInt(_demoSets.length)];
 
-      final run = timed('Morning run', 0, 7 * 60 + 30, 8 * 60,
-          tags: ['health']);
-      core.toggleTask(run); // one thing already done — the ring breathes
-      timed('Coffee with Anna', 0, 9 * 60 + 30, 10 * 60 + 15, tags: ['life']);
-      timed('Deep work — finish the draft', 0, 14 * 60, 16 * 60, priority: 2);
-      ids.add(core
-          .createTaskEx(
-            title: 'Reply to Mark about the offer',
-            dayTs: today.millisecondsSinceEpoch,
-            priority: 1,
-          )
-          .id);
-      timed('Gym — legs day', 1, 11 * 60, 12 * 60, tags: ['health']);
-      ids.add(core
-          .createTaskEx(
-            title: 'Plan the weekend trip',
-            dayTs: DateTime(now.year, now.month, now.day + 1)
-                .millisecondsSinceEpoch,
-            tags: ['life'],
-          )
-          .id);
-      timed('Team sync', 2, 10 * 60, 10 * 60 + 30, tags: ['work']);
-      final spark = core.createInboxTask('Idea: a honey-dark theme for the site',
-          DateTime.now().millisecondsSinceEpoch);
-      ids.add(spark.id);
-      final flights = core.createInboxTask('Book flights for August',
-          DateTime.now().millisecondsSinceEpoch);
-      core.updateTaskInStore(flights.copyWith(tags: ['travel']));
-      ids.add(flights.id);
+      for (final d in set) {
+        if (d.inbox) {
+          final t = core.createInboxTask(d.title, now.millisecondsSinceEpoch);
+          if (d.tags.isNotEmpty) {
+            core.updateTaskInStore(t.copyWith(tags: d.tags));
+          }
+          ids.add(t.id);
+          continue;
+        }
+        final t = core.createTaskEx(
+          title: d.title,
+          dayTs: DateTime(now.year, now.month, now.day + d.dayOffset)
+              .millisecondsSinceEpoch,
+          startTime: d.start,
+          endTime: d.end,
+          priority: d.priority,
+          tags: d.tags,
+        );
+        if (d.done) core.toggleTask(t);
+        ids.add(t.id);
+      }
 
       prefs
         ..seeded = true
@@ -506,6 +497,95 @@ class TaskState extends ChangeNotifier {
     }
   }
 }
+
+/// One line of the first-launch sample week. [inbox] tasks carry no day.
+class _DemoTask {
+  final String title;
+  final int dayOffset;
+  final int? start; // minutes from midnight
+  final int? end;
+  final int priority;
+  final List<String> tags;
+  final bool done;
+  final bool inbox;
+  const _DemoTask(
+    this.title, {
+    this.dayOffset = 0,
+    this.start,
+    this.end,
+    this.priority = 0,
+    this.tags = const [],
+    this.done = false,
+    this.inbox = false,
+  });
+}
+
+/// A plausible week, written four ways — one is drawn at random per install so
+/// two people don't compare identical chores. Every set holds the SAME shape:
+/// 5 timed, 2 unscheduled, 2 inbox, exactly 1 done, at least one !! and one tag.
+/// Keep that shape if you add a set; the first-run anatomy depends on it, and
+/// first_run_test.dart asserts it.
+const List<List<_DemoTask>> _demoSets = [
+  [
+    _DemoTask('Morning walk, before the noise',
+        start: 450, end: 480, tags: ['health'], done: true),
+    _DemoTask('Coffee with Anna', start: 570, end: 615, tags: ['life']),
+    _DemoTask('Deep work — finish the draft',
+        start: 840, end: 960, priority: 2),
+    _DemoTask('Reply to Mark about the offer', priority: 1),
+    _DemoTask('Long swim', dayOffset: 1, start: 660, end: 720, tags: ['health']),
+    _DemoTask('Plan the weekend properly', dayOffset: 1, tags: ['life']),
+    _DemoTask('Team sync', dayOffset: 2, start: 600, end: 630, tags: ['work']),
+    _DemoTask('Idea: a honey-dark theme for the site', inbox: true),
+    _DemoTask('Book the August flights', inbox: true, tags: ['travel']),
+  ],
+  [
+    _DemoTask('Run before the street wakes',
+        start: 420, end: 465, tags: ['health'], done: true),
+    _DemoTask('Coffee with Nadia', start: 600, end: 645, tags: ['life']),
+    _DemoTask('Deep work — the proposal, no tabs',
+        start: 810, end: 930, priority: 2),
+    _DemoTask('Write back to Ilya', priority: 1),
+    _DemoTask('Climbing gym',
+        dayOffset: 1, start: 1080, end: 1170, tags: ['health']),
+    _DemoTask('Sketch the route for the trip', dayOffset: 1, tags: ['life']),
+    _DemoTask('Standup with the team',
+        dayOffset: 2, start: 600, end: 620, tags: ['work']),
+    _DemoTask('A quieter name for the second product', inbox: true),
+    _DemoTask('Find that essay on attention', inbox: true, tags: ['read']),
+  ],
+  [
+    _DemoTask('Stretch, then tea',
+        start: 480, end: 500, tags: ['health'], done: true),
+    _DemoTask('Call the printer about the paper',
+        start: 660, end: 690, tags: ['work']),
+    _DemoTask('Deep work — cut the first act',
+        start: 900, end: 1020, priority: 2),
+    _DemoTask('Answer Sofia about the lease', priority: 1),
+    _DemoTask('Pool, slowly',
+        dayOffset: 1, start: 480, end: 540, tags: ['health']),
+    _DemoTask('Groceries for the week', dayOffset: 1, tags: ['life']),
+    _DemoTask('Review with Daniel',
+        dayOffset: 2, start: 720, end: 765, tags: ['work']),
+    _DemoTask('Try the warm grey for the labels', inbox: true),
+    _DemoTask('Reread the Calvino lectures', inbox: true, tags: ['read']),
+  ],
+  [
+    _DemoTask('Walk the long way round',
+        start: 465, end: 495, tags: ['health'], done: true),
+    _DemoTask('Coffee with Vera', start: 630, end: 660, tags: ['life']),
+    _DemoTask('Deep work — finish the estimate',
+        start: 840, end: 960, priority: 2),
+    _DemoTask('Reply to the landlord', priority: 1),
+    _DemoTask('Yoga, the slow class',
+        dayOffset: 1, start: 1140, end: 1200, tags: ['health']),
+    _DemoTask("Plan Saturday's dinner", dayOffset: 1, tags: ['life']),
+    _DemoTask('Weekly sync',
+        dayOffset: 2, start: 570, end: 600, tags: ['work']),
+    _DemoTask('A better word than "dashboard"', inbox: true),
+    _DemoTask('Book the train, not the plane', inbox: true, tags: ['travel']),
+  ],
+];
 
 /// One undoable mutation: a toggle (by id) or a delete (full snapshot plus
 /// the task's original position in its day list).

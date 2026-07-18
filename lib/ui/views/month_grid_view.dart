@@ -660,6 +660,10 @@ class _MonthPageState extends State<_MonthPage> {
             ...items,
             if (hiddenCount > 0)
               IgnorePointer(
+                // Keyed so it stays a LABEL: unkeyed, deleting a row let Flutter
+                // reconcile this text with a card by position, so the survivor
+                // visibly "grew out of" the +N more line.
+                key: const ValueKey('more'),
                 child: Text(
                   '+$hiddenCount more',
                   style: TextStyle(
@@ -688,6 +692,10 @@ class _MonthPageState extends State<_MonthPage> {
       taskState: widget.taskState,
       settleTopOffset: 34,
       settleHeight: 24,
+      // A month cell shows two rows — there is no honest room to aim at a
+      // group, and a 14px "unscheduled" sliver would be a lie. So a drop here
+      // just moves the day and KEEPS the time; zoom into the day to re-schedule.
+      splitTime: false,
       highlightRadius: BorderRadius.circular(AppTheme.radiusXLarge),
       builder: (dividerKey) => MouseRegion(
       onEnter: (_) {

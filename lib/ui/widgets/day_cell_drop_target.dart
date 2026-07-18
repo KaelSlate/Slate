@@ -7,11 +7,15 @@ import '../../core/theme/app_theme.dart';
 /// Drop zone for a week/month day cell. Registers itself by global rect
 /// (initState/dispose — PageView page flips keep the registry correct for free).
 ///
-/// The cell splits at the SCHEDULED│TO-SCHEDULE divider the cell already draws
-/// between timed and untimed tasks: cursor ABOVE it = keep the time, BELOW = drop
-/// it. That split still decides the outcome — but it is no longer PAINTED. The
-/// incoming card itself, rendered in its destination group (see DropFuture), is
-/// what shows where it lands; this widget only frames the receiving day.
+/// A TIMED task dropped here can either keep its time (join the scheduled group)
+/// or lose it (join the unscheduled pool). You choose by AIMING AT THE GROUP —
+/// the boundary sits exactly where the two groups actually meet. See
+/// [_splitGlobalY] for why that boundary is measured from the real tasks only.
+///
+/// [splitTime] turns the choice off entirely (the month cell): there, a drop
+/// simply moves the task to that day and keeps its time. A month cell shows two
+/// rows at most, so there is no honest room to aim at a group — zoom into the
+/// day to re-schedule.
 class DayCellDropTarget extends StatefulWidget {
   final DateTime date;
   final TaskState? taskState;
@@ -28,6 +32,13 @@ class DayCellDropTarget extends StatefulWidget {
   /// glow background carries a margin) — the wash must hug the card frame.
   final EdgeInsets highlightInsets;
 
+  /// Height of ONE task row (card + its bottom margin). The keep/clear boundary
+  /// is measured in these, so it lands on the real gap between the groups.
+  final double rowHeight;
+
+  /// False → no keep/clear choice at all; a timed drop always keeps its time.
+  final bool splitTime;
+
   const DayCellDropTarget({
     super.key,
     required this.date,
@@ -37,6 +48,8 @@ class DayCellDropTarget extends StatefulWidget {
     this.settleHeight = 30,
     this.highlightRadius = const BorderRadius.all(Radius.circular(10)),
     this.highlightInsets = EdgeInsets.zero,
+    this.rowHeight = 38,
+    this.splitTime = true,
   });
 
   @override
@@ -92,17 +105,36 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return !_isSameDay(p) || p.task.startTime != null;
   }
 
-  /// Global Y of the keep/clear boundary — a STABLE fraction of the cell, never
-  /// the live divider box. This is the fix for the flicker/teleport: reading the
-  /// divider made the boundary depend on the layout, but inserting the "show the
-  /// future" preview MOVES the divider (a timed group appears/vanishes), which
-  /// flipped the decision, which moved the preview, which moved the divider — a
-  /// feedback loop. A fixed fraction can't move, so the decision is rock-steady.
-  /// There is no drawn line to disagree with it; the incoming card's own time
-  /// (present above, gone below) is what tells you which half you're in.
+  /// How many TIMED tasks really sit on this day. Read from the store, never
+  /// from the laid-out widgets — that independence is what kills the feedback
+  /// loop (see [_splitGlobalY]).
+  int _realTimedCount() {
+    final ts = widget.taskState;
+    if (ts == null) return 0;
+    final d = DateTime(widget.date.year, widget.date.month, widget.date.day);
+    final tasks = ts.tasksForDateNotifier(d.millisecondsSinceEpoch).value;
+    return tasks.where((t) => t.startTime != null).length;
+  }
+
+  /// Global Y where the scheduled group ends and the unscheduled pool begins —
+  /// i.e. you aim AT THE GROUP you want, which is the only thing that matches
+  /// what your eyes see.
+  ///
+  /// Measured from the REAL tasks (the store), never from the live widgets: the
+  /// "show the future" preview inserts a row, which would move a widget-measured
+  /// boundary, which would flip the decision, which would move the preview — the
+  /// flicker/teleport loop. Real counts don't move while you hover, so it's
+  /// rock-steady.
+  ///
+  /// An EMPTY timed group still reserves ONE row, so "keep the time" stays
+  /// aimable on a day that holds only untimed tasks — or none at all. Below that
+  /// reserved row is the pool, which is exactly where those untimed tasks are.
   double _splitGlobalY(Rect r) {
     final head = widget.settleTopOffset.clamp(0.0, r.height);
-    return r.top + head + (r.height - head) * 0.5;
+    final timed = _realTimedCount();
+    final rows = timed == 0 ? 1 : timed;
+    final y = r.top + head + rows * widget.rowHeight;
+    return y.clamp(r.top + head, r.bottom - 4);
   }
 
   /// 'whole' — an untimed task has exactly ONE destination (unallocated), so no
@@ -110,6 +142,8 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   /// 'keep' (top) | 'clear' (bottom) | 'reject' (same-day keep is a no-op).
   String _modeFor(Offset globalPos, DragPayload p) {
     if (p.task.startTime == null) return 'whole';
+    // Month: no aiming — a drop keeps the time, full stop.
+    if (!widget.splitTime) return _isSameDay(p) ? 'reject' : 'keep';
     final r = globalRect();
     final overTop = r == null ? false : globalPos.dy < _splitGlobalY(r);
     if (overTop) return _isSameDay(p) ? 'reject' : 'keep';

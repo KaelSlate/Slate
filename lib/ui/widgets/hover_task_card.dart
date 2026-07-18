@@ -243,16 +243,11 @@ class _HoverTaskCardState extends State<HoverTaskCard>
     final hPad = widget.compact ? 12.0 : 14.0;
     final fSize = widget.compact ? 11.5 : 13.0;
 
-    FontWeight titleWeight;
-    if (done) {
-      titleWeight = FontWeight.w300;
-    } else {
-      switch (priority) {
-        case 2: titleWeight = FontWeight.w600; break;
-        case 1: titleWeight = FontWeight.w500; break;
-        default: titleWeight = FontWeight.w400;
-      }
-    }
+    // ONE weight for every task. Priority already speaks through the left accent
+    // bar (wider for !!) and a touch more contrast below — bolding the title too
+    // made important tasks shout in a list that should read as one calm voice.
+    final FontWeight titleWeight =
+        done ? FontWeight.w300 : FontWeight.w400;
 
     final titleOpacity = done
         ? 0.22
@@ -406,7 +401,12 @@ class _HoverTaskCardState extends State<HoverTaskCard>
                           ),
                         ),
                         // ──── Tags ────
-                        if (widget.task.tags.isNotEmpty) ...[
+                        // Not in a dense overview row: a chip eats ~55px of a
+                        // ~180px week/month card, crushing the title it is
+                        // supposed to annotate. The overview answers "what and
+                        // when"; tags live in the day view and the hover peek.
+                        if (widget.task.tags.isNotEmpty &&
+                            (!widget.compact || widget.fullTitle)) ...[
                           const SizedBox(width: 8),
                           ...widget.task.tags.map((t) => Container(
                                 margin: const EdgeInsets.only(right: 4),
