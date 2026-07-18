@@ -3,25 +3,23 @@ import 'package:flutter/material.dart';
 import '../../core/interaction/drag_session.dart';
 import '../../core/state/task_state.dart';
 import '../../core/theme/app_theme.dart';
+import 'anytime_rail.dart';
 
 /// Drop zone for a week/month day cell. Registers itself by global rect
 /// (initState/dispose — PageView page flips keep the registry correct for free).
 ///
-/// A TIMED task dropped here can either keep its time (join the scheduled group)
-/// or lose it (join the unscheduled pool). You choose by AIMING AT THE GROUP —
-/// the boundary sits exactly where the two groups actually meet. See
-/// [_splitGlobalY] for why that boundary is measured from the real tasks only.
-///
-/// [splitTime] turns the choice off entirely (the month cell): there, a drop
-/// simply moves the task to that day and keeps its time. A month cell shows two
-/// rows at most, so there is no honest room to aim at a group — zoom into the
-/// day to re-schedule.
+/// A TIMED task dropped on the cell's BODY moves to that day and keeps its hour
+/// — the default every calendar on earth uses. Dropping it on the [AnytimeRail]
+/// pinned to the cell's bottom edge clears the time instead. One rule, and it
+/// holds on an empty day, on a day of only-timed tasks, on the same day, and in
+/// a month cell — none of which have room to aim at a group.
 class DayCellDropTarget extends StatefulWidget {
   final DateTime date;
   final TaskState? taskState;
 
-  /// Builds the cell content. The passed key MUST be attached to the cell's
-  /// timed/untimed divider — it is what the hit-test splits keep/clear on.
+  /// Builds the cell content. The passed key is attached to the cell's
+  /// timed/untimed divider (kept for the list's own layout; the drop no longer
+  /// measures anything from it).
   final Widget Function(GlobalKey dividerKey) builder;
 
   /// Approximate slot the preview settles into, inside the cell.
@@ -29,15 +27,11 @@ class DayCellDropTarget extends StatefulWidget {
   final double settleHeight;
   final BorderRadius highlightRadius;
   /// Inset of the VISIBLE card inside this widget's box (the week column's
-  /// glow background carries a margin) — the wash must hug the card frame.
+  /// glow background carries a margin) — the frame must hug the card.
   final EdgeInsets highlightInsets;
 
-  /// Height of ONE task row (card + its bottom margin). The keep/clear boundary
-  /// is measured in these, so it lands on the real gap between the groups.
-  final double rowHeight;
-
-  /// False → no keep/clear choice at all; a timed drop always keeps its time.
-  final bool splitTime;
+  /// Height of the "Anytime" rail at the cell's bottom edge.
+  final double railHeight;
 
   const DayCellDropTarget({
     super.key,
@@ -48,8 +42,7 @@ class DayCellDropTarget extends StatefulWidget {
     this.settleHeight = 30,
     this.highlightRadius = const BorderRadius.all(Radius.circular(10)),
     this.highlightInsets = EdgeInsets.zero,
-    this.rowHeight = 38,
-    this.splitTime = true,
+    this.railHeight = 22,
   });
 
   @override
@@ -74,6 +67,15 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   void initState() {
     super.initState();
     DragSession.instance.registry.register(this);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _publishCardWidth());
+  }
+
+  @override
+  void didUpdateWidget(DayCellDropTarget old) {
+    super.didUpdateWidget(old);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _publishCardWidth());
   }
 
   @override
@@ -93,6 +95,17 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return box.localToGlobal(Offset.zero) & box.size;
   }
 
+  /// Tell the session how wide a card is HERE, so the flying preview is carried
+  /// at the size of what it becomes instead of the size it came from (an inbox
+  /// card is far wider than a day row). Every cell in a row/grid is the same
+  /// width, so any one of them is authoritative.
+  void _publishCardWidth() {
+    final r = globalRect();
+    if (r == null) return;
+    final w = r.width - widget.highlightInsets.horizontal - 12;
+    if (w > 0) DragSession.instance.noteOverviewCardWidth(w);
+  }
+
   bool _isSameDay(DragPayload p) {
     final d = p.sourceDay;
     return d != null && _sameDay(d, widget.date);
@@ -105,49 +118,24 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return !_isSameDay(p) || p.task.startTime != null;
   }
 
-  /// How many TIMED tasks really sit on this day. Read from the store, never
-  /// from the laid-out widgets — that independence is what kills the feedback
-  /// loop (see [_splitGlobalY]).
-  int _realTimedCount() {
-    final ts = widget.taskState;
-    if (ts == null) return 0;
-    final d = DateTime(widget.date.year, widget.date.month, widget.date.day);
-    final tasks = ts.tasksForDateNotifier(d.millisecondsSinceEpoch).value;
-    return tasks.where((t) => t.startTime != null).length;
-  }
-
-  /// Global Y where the scheduled group ends and the unscheduled pool begins —
-  /// i.e. you aim AT THE GROUP you want, which is the only thing that matches
-  /// what your eyes see.
-  ///
-  /// Measured from the REAL tasks (the store), never from the live widgets: the
-  /// "show the future" preview inserts a row, which would move a widget-measured
-  /// boundary, which would flip the decision, which would move the preview — the
-  /// flicker/teleport loop. Real counts don't move while you hover, so it's
-  /// rock-steady.
-  ///
-  /// An EMPTY timed group still reserves ONE row, so "keep the time" stays
-  /// aimable on a day that holds only untimed tasks — or none at all. Below that
-  /// reserved row is the pool, which is exactly where those untimed tasks are.
-  double _splitGlobalY(Rect r) {
-    final head = widget.settleTopOffset.clamp(0.0, r.height);
-    final timed = _realTimedCount();
-    final rows = timed == 0 ? 1 : timed;
-    final y = r.top + head + rows * widget.rowHeight;
-    return y.clamp(r.top + head, r.bottom - 4);
+  /// Global Y of the rail's top edge. A CONSTANT offset from the cell's bottom —
+  /// it owes nothing to the cell's content, so the "show the future" preview
+  /// can never move the line that decides the preview. That is what retires the
+  /// flicker/teleport loop for good.
+  double _railTopGlobal(Rect r) {
+    final inset = widget.highlightInsets.bottom;
+    return (r.bottom - inset - widget.railHeight)
+        .clamp(r.top, r.bottom);
   }
 
   /// 'whole' — an untimed task has exactly ONE destination (unallocated), so no
-  /// split, no line, no rejection: the day accepts it anywhere.
-  /// 'keep' (top) | 'clear' (bottom) | 'reject' (same-day keep is a no-op).
+  /// choice and no rail: the day accepts it anywhere.
+  /// 'keep' (body) | 'clear' (rail) | 'reject' (same-day body is a no-op).
   String _modeFor(Offset globalPos, DragPayload p) {
     if (p.task.startTime == null) return 'whole';
-    // Month: no aiming — a drop keeps the time, full stop.
-    if (!widget.splitTime) return _isSameDay(p) ? 'reject' : 'keep';
     final r = globalRect();
-    final overTop = r == null ? false : globalPos.dy < _splitGlobalY(r);
-    if (overTop) return _isSameDay(p) ? 'reject' : 'keep';
-    return 'clear';
+    if (r != null && globalPos.dy >= _railTopGlobal(r)) return 'clear';
+    return _isSameDay(p) ? 'reject' : 'keep';
   }
 
   @override
@@ -175,10 +163,11 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     }
     final r = globalRect();
     if (r == null) return const DropResult();
-    // Everything but 'keep' lands in the unallocated section, below the divider.
+    // First-frame estimate only — the refine-to-card path corrects it to the
+    // real row as soon as the list has laid the new card out.
     final top = (mode == 'keep'
             ? r.top + widget.settleTopOffset
-            : _splitGlobalY(r) + 6)
+            : _railTopGlobal(r) - widget.settleHeight - 6)
         .clamp(r.top, r.bottom - widget.settleHeight);
     return DropResult(
       settleGlobalRect:
@@ -203,7 +192,9 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
               child: ValueListenableBuilder<DropHover?>(
                 valueListenable: DragSession.instance.hover,
                 builder: (_, h, _) {
-                  final on = h?.zoneId == id;
+                  // 'reject' (same-day body) lights nothing — the cell says
+                  // "no change" rather than pretending to be a target.
+                  final on = h?.zoneId == id && h?.cellMode != 'reject';
                   return AnimatedContainer(
                     duration: const Duration(milliseconds: 140),
                     curve: Curves.easeOut,
@@ -222,6 +213,20 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
                   );
                 },
               ),
+            ),
+          ),
+        ),
+        // The home of "no time" — see AnytimeRail. Pinned to the bottom edge,
+        // outside the list's layout, so it can never reflow what it decides.
+        Positioned(
+          left: widget.highlightInsets.left + 4,
+          right: widget.highlightInsets.right + 4,
+          bottom: widget.highlightInsets.bottom + 3,
+          child: ValueListenableBuilder<DropHover?>(
+            valueListenable: DragSession.instance.hover,
+            builder: (_, h, _) => AnytimeRail(
+              armed: h?.zoneId == id && h?.cellMode == 'clear',
+              height: widget.railHeight,
             ),
           ),
         ),

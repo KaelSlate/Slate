@@ -12,33 +12,31 @@ import 'package:slate/ui/widgets/drop_future.dart';
 
 /// The week/month day cell as a drop target, against the REAL engine DLL.
 ///
-/// You AIM AT THE GROUP: above the scheduled group's end = keep the time, below
-/// it = drop into the unscheduled pool. The boundary is measured from the REAL
-/// tasks on the day (never the laid-out widgets), so inserting the drop preview
-/// can't move it — that feedback loop was the flicker/teleport bug.
+/// Aiming at a group is retired. The BODY of the cell means "move it here, keep
+/// the hour" — the calendar default, so nothing can surprise a new user. The
+/// "Anytime" RAIL pinned to the bottom edge means "clear the time". The rail is
+/// a constant offset from that edge, so unlike every boundary before it, the
+/// drop preview cannot move the line that decides the preview.
 late TaskState ts;
 
-/// Cell geometry — deliberately fixed so the split maths is checkable by hand.
+/// Cell geometry — deliberately fixed so the maths is checkable by hand.
 const double cellTop = 100;
 const double cellLeft = 50;
 const double cellW = 200;
 const double cellH = 600;
 const double settleTop = 96;
-const double rowH = 38;
+const double railH = 22;
 
-/// Global Y of the boundary for a day holding [timedCount] timed tasks. An empty
-/// scheduled group still reserves ONE row so "keep the time" stays aimable.
-double splitFor(int timedCount) =>
-    cellTop + settleTop + (timedCount == 0 ? 1 : timedCount) * rowH;
+/// Global Y of the rail's top edge. One number, whatever the day holds.
+double railTop([double h = railH]) => cellTop + cellH - h;
 
-/// Each test gets its OWN day so the timed count — and therefore the boundary —
-/// is exact and never depends on what another test left behind.
+/// Each test gets its OWN day so nothing depends on what another left behind.
 DateTime day(int n) => DateTime(2026, 8, n);
 
 Widget cellHarness({
   required DateTime date,
   double? dividerAt,
-  bool splitTime = true,
+  double rail = railH,
 }) {
   return MaterialApp(
     home: Scaffold(
@@ -53,8 +51,7 @@ Widget cellHarness({
               date: date,
               taskState: ts,
               settleTopOffset: settleTop,
-              rowHeight: rowH,
-              splitTime: splitTime,
+              railHeight: rail,
               builder: (dividerKey) => Stack(
                 children: [
                   const SizedBox.expand(),
@@ -137,34 +134,61 @@ void main() {
 
   tearDown(() => DragSession.instance.debugReset());
 
-  testWidgets('cross-day drop above the boundary keeps the time', (tester) async {
-    final src = day(4), dst = day(6); // dst holds nothing → boundary at +1 row
+  testWidgets('the body keeps the time — the calendar default', (tester) async {
+    final src = day(4), dst = day(6);
     final t = await makeTask('keep me', src, startMin: 570); // 09:30
     await tester.pumpWidget(cellHarness(date: dst));
     await tester.pump();
 
-    await dragTo(tester, payloadFor(t, src), splitFor(0) - 10);
+    await dragTo(tester, payloadFor(t, src), cellTop + 200);
     final after = ts.tasks.firstWhere((x) => x.id == t.id);
 
-    expect(after.startTime, 570, reason: 'keep holds the time verbatim');
+    expect(after.startTime, 570, reason: 'the hour survives verbatim');
     expect(after.endTime, 630);
     expect(DateTime.fromMillisecondsSinceEpoch(after.createdAt).day, dst.day,
-        reason: 'and still moves to the target day');
+        reason: 'and it still moves to the target day');
     expect(after.isInbox, isFalse);
   });
 
-  testWidgets('cross-day drop below the boundary drops the time', (tester) async {
+  testWidgets('the Anytime rail clears the time', (tester) async {
     final src = day(4), dst = day(7);
     final t = await makeTask('clear me', src, startMin: 570);
     await tester.pumpWidget(cellHarness(date: dst));
     await tester.pump();
 
-    await dragTo(tester, payloadFor(t, src), splitFor(0) + 40);
+    await dragTo(tester, payloadFor(t, src), railTop() + 8);
     final after = ts.tasks.firstWhere((x) => x.id == t.id);
 
     expect(after.startTime, isNull);
     expect(after.endTime, isNull);
     expect(DateTime.fromMillisecondsSinceEpoch(after.createdAt).day, dst.day);
+  });
+
+  testWidgets('THE POINT: the rail is in the same place whatever the day holds',
+      (tester) async {
+    // Every previous boundary moved with the cell's contents, so the same
+    // gesture meant different things on an empty day, a day of only-timed
+    // tasks, and a full one. That is the bug class this retires.
+    final src = day(4);
+    final empty = day(14);
+    final onlyTimed = day(15);
+    final mixed = day(16);
+
+    await makeTask('t A', onlyTimed, startMin: 540);
+    await makeTask('t B', onlyTimed, startMin: 600);
+    await makeTask('m A', mixed, startMin: 540);
+    await makeTask('m B', mixed); // untimed
+    final t = await makeTask('aim me', src, startMin: 570);
+
+    for (final dst in [empty, onlyTimed, mixed]) {
+      await tester.pumpWidget(cellHarness(date: dst));
+      await tester.pump();
+      final p = payloadFor(t, src);
+      DragSession.instance.begin(p, const Offset(10, 10));
+      expect(modeAt(p, railTop() - 10), 'keep', reason: 'body on ${dst.day}');
+      expect(modeAt(p, railTop() + 8), 'clear', reason: 'rail on ${dst.day}');
+      DragSession.instance.debugReset();
+    }
   });
 
   testWidgets('an untimed task is whole — one destination at any height',
@@ -176,10 +200,11 @@ void main() {
 
     final p = payloadFor(t, src);
     DragSession.instance.begin(p, const Offset(10, 10));
-    expect(modeAt(p, splitFor(0) - 40), 'whole', reason: 'high: no split');
-    expect(modeAt(p, splitFor(0) + 200), 'whole', reason: 'low: same');
+    expect(modeAt(p, cellTop + 120), 'whole', reason: 'body: no choice');
+    expect(modeAt(p, railTop() + 8), 'whole',
+        reason: 'and no rail either — there is nothing to choose');
 
-    DragSession.instance.update(Offset(cellLeft + cellW / 2, splitFor(0) + 200));
+    DragSession.instance.update(Offset(cellLeft + cellW / 2, railTop() + 8));
     await tester.pump();
     DragSession.instance.drop();
     await tester.pump();
@@ -189,22 +214,23 @@ void main() {
     expect(DateTime.fromMillisecondsSinceEpoch(after.createdAt).day, dst.day);
   });
 
-  testWidgets('same-day keep is a no-op', (tester) async {
+  testWidgets('same day: the body is a no-op, the rail still un-schedules',
+      (tester) async {
     final d = day(9);
     final t = await makeTask('already here', d, startMin: 570);
     await tester.pumpWidget(cellHarness(date: d));
     await tester.pump();
 
-    // The day now holds 1 timed task → the boundary sits one row lower.
     final p = payloadFor(t, d);
     DragSession.instance.begin(p, const Offset(10, 10));
-    expect(modeAt(p, splitFor(1) - 10), 'reject');
+    expect(modeAt(p, cellTop + 150), 'reject', reason: 'nothing would change');
+    expect(modeAt(p, railTop() + 8), 'clear',
+        reason: 're-filing INTO the pool on the same day is the whole point');
 
     DragSession.instance.drop();
     await tester.pump();
-
     final after = ts.tasks.firstWhere((x) => x.id == t.id);
-    expect(after.startTime, 570, reason: 'nothing moved');
+    expect(after.startTime, isNull, reason: 'released on the rail');
   });
 
   testWidgets('the preview SHOWS the future — card with time, or without',
@@ -217,49 +243,24 @@ void main() {
     final p = payloadFor(t, src);
     DragSession.instance.begin(p, const Offset(10, 10));
 
-    // Above the boundary → keep: the projected card carries its time.
-    expect(modeAt(p, splitFor(0) - 10), 'keep');
+    expect(modeAt(p, cellTop + 200), 'keep');
     final keep = DropFuture.forDate(dst)!;
     expect(keep.keepsTime, isTrue);
     expect(keep.projected.startTime, 570, reason: 'the card lands WITH 09:30');
 
-    // Below → clear: the projected card has no time, and no badge says so —
-    // the absence of the time on the card IS the message.
-    expect(modeAt(p, splitFor(0) + 40), 'clear');
+    // On the rail → the projected card has no time, and no badge says so — the
+    // absence of the time on the card IS the message.
+    expect(modeAt(p, railTop() + 8), 'clear');
     final clear = DropFuture.forDate(dst)!;
     expect(clear.keepsTime, isFalse);
     expect(clear.projected.startTime, isNull);
   });
 
-  testWidgets('you aim AT THE GROUP: the boundary follows the real timed count',
-      (tester) async {
-    // The whole point: the boundary sits where the scheduled group actually
-    // ends, so pointing at the unscheduled tasks means "unscheduled".
-    final src = day(4), dst = day(11);
-    await makeTask('dst timed A', dst, startMin: 540);
-    await makeTask('dst timed B', dst, startMin: 600);
-    final t = await makeTask('aim me', src, startMin: 570);
-
-    await tester.pumpWidget(cellHarness(date: dst));
-    await tester.pump();
-    final p = payloadFor(t, src);
-    DragSession.instance.begin(p, const Offset(10, 10));
-
-    // 2 real timed rows → boundary two rows down, NOT one.
-    expect(modeAt(p, splitFor(2) - 10), 'keep',
-        reason: 'still inside the scheduled group');
-    expect(modeAt(p, splitFor(2) + 10), 'clear',
-        reason: 'past the scheduled group = the pool');
-    // The one-row boundary of an empty day would have called this 'clear'.
-    expect(modeAt(p, splitFor(1) + 10), 'keep',
-        reason: 'the boundary MOVED with the real group, as the eye expects');
-  });
-
-  testWidgets('the boundary ignores the drawn divider (no feedback loop)',
+  testWidgets('the rail ignores the drawn divider (no feedback loop)',
       (tester) async {
     // Reading the live divider is what let the preview move the boundary, flip
-    // the decision, and flicker. Same day, wildly different divider positions →
-    // identical decisions.
+    // the decision, and flicker. Wildly different divider positions → identical
+    // decisions.
     final src = day(4), dst = day(12);
     final t = await makeTask('stable', src, startMin: 570);
 
@@ -268,30 +269,28 @@ void main() {
       await tester.pump();
       final p = payloadFor(t, src);
       DragSession.instance.begin(p, const Offset(10, 10));
-      expect(modeAt(p, splitFor(0) - 10), 'keep', reason: 'divider=$dividerAt');
-      expect(modeAt(p, splitFor(0) + 40), 'clear', reason: 'divider=$dividerAt');
+      expect(modeAt(p, cellTop + 200), 'keep', reason: 'divider=$dividerAt');
+      expect(modeAt(p, railTop() + 8), 'clear', reason: 'divider=$dividerAt');
       DragSession.instance.debugReset();
     }
   });
 
-  testWidgets('month (splitTime off): a drop always keeps the time',
-      (tester) async {
-    // A month cell shows two rows — no honest room to aim at a group.
+  testWidgets('month: a shorter rail, identical rule', (tester) async {
+    // Month is no longer a special case — it gets the same object, just 15px.
     final src = day(4), dst = day(13);
     final t = await makeTask('month drop', src, startMin: 570);
-    await tester.pumpWidget(cellHarness(date: dst, splitTime: false));
+    await tester.pumpWidget(cellHarness(date: dst, rail: 15));
     await tester.pump();
 
     final p = payloadFor(t, src);
     DragSession.instance.begin(p, const Offset(10, 10));
-    expect(modeAt(p, splitFor(0) - 10), 'keep', reason: 'high in the cell');
-    expect(modeAt(p, splitFor(0) + 300), 'keep',
-        reason: 'and low too — there is no clear zone at all');
+    expect(modeAt(p, railTop(15) - 10), 'keep');
+    expect(modeAt(p, railTop(15) + 5), 'clear');
 
     DragSession.instance.drop();
     await tester.pump();
     final after = ts.tasks.firstWhere((x) => x.id == t.id);
-    expect(after.startTime, 570, reason: 'the time survives a month drop');
+    expect(after.startTime, isNull, reason: 'released on the month rail');
     expect(DateTime.fromMillisecondsSinceEpoch(after.createdAt).day, dst.day);
   });
 
@@ -318,15 +317,12 @@ void main() {
     final p = payloadFor(t, day(4));
     DragSession.instance.begin(p, const Offset(10, 10));
 
-    // Keep: the real card, carrying its time — the badge/grey wash is gone; the
-    // time ON the card is the whole message.
     final keep = DropFuture(t, true);
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: keep.card())));
     await tester.pump();
     expect(find.text('render me'), findsOneWidget);
     expect(find.text('09:30'), findsOneWidget, reason: 'lands WITH its time');
 
-    // Clear: the same card, no time — absence is the message, no "No time" badge.
     final cleared = RustTask(
       id: t.id, title: t.title, isCompleted: t.isCompleted,
       createdAt: t.createdAt, startTime: null, endTime: null,

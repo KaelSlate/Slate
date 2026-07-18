@@ -394,6 +394,7 @@ class TaskState extends ChangeNotifier {
     _tasks.removeWhere((t) => t.id == task.id);
     final dayIndex = core.removeTaskFromStore(task.id);
     DeleteSettle.stamp(); // toggle taps pause while rows glide up
+    DeleteSettle.unmarkDeleting(task.id); // the row is really gone now
     _pushUndo(_UndoEntry.delete(task, dayIndex));
     _invalidateTaskCaches(task);
     _bumpTick();

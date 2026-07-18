@@ -113,6 +113,9 @@ class _HoverTaskCardState extends State<HoverTaskCard>
 
   @override
   void dispose() {
+    // Safety: a card torn down mid-collapse (view switch) must not leave its id
+    // marked, or that row stays excluded from the list's capacity forever.
+    if (_isDeleting) DeleteSettle.unmarkDeleting(widget.task.id);
     _strikeCtrl.dispose();
     _hoverCtrl.dispose();
     _titleController.dispose();
@@ -124,6 +127,10 @@ class _HoverTaskCardState extends State<HoverTaskCard>
   void _triggerDelete() async {
     if (_isDeleting || widget.onDelete == null) return;
     setState(() => _isDeleting = true);
+    // Publish the id NOW, not in 260ms: lists drop it from their capacity
+    // immediately, so the next card is promoted and glides up DURING this
+    // collapse instead of popping in after it. See DeleteSettle.deleting.
+    DeleteSettle.markDeleting(widget.task.id);
     _deleteCtrl.reverse();
     await Future.delayed(const Duration(milliseconds: 260));
     if (mounted && widget.onDelete != null) widget.onDelete!();

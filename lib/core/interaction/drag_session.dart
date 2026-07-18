@@ -195,6 +195,13 @@ class DragSession extends ChangeNotifier {
     return _settleTarget;
   }
 
+  /// Width of one card in the current overview, published by the day cells.
+  /// The flight preview is carried at the size of what it BECOMES, not the size
+  /// it came from — otherwise a wide inbox card flies wide and jolts on landing.
+  double? _overviewCardWidth;
+  double? get overviewCardWidth => _overviewCardWidth;
+  void noteOverviewCardWidth(double w) => _overviewCardWidth = w;
+
   /// Chrome the preview un-morphs into while landing: 'block' after a ribbon
   /// drop, 'card' everywhere else.
   String _landingChrome = 'card';

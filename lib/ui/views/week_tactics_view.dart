@@ -7,6 +7,7 @@ import '../../core/engine/slate_core_bridge.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/state/task_state.dart';
 import '../../core/interaction/drag_session.dart';
+import '../../core/interaction/delete_settle.dart';
 import '../widgets/hover_task_card.dart';
 import '../widgets/drag_source.dart';
 import '../widgets/drop_future.dart';
@@ -495,9 +496,6 @@ class WeekTacticsViewState extends State<WeekTacticsView> {
                   taskState: widget.taskState,
                   settleTopOffset: 96,
                   settleHeight: 32,
-                  // One compact row = 34 card + 4 margin. The keep/clear
-                  // boundary counts these, so it lands on the real group gap.
-                  rowHeight: 38,
                   // Match _HoverGlowBackground's visible frame exactly —
                   // margin + radius — so the wash never pokes past the card.
                   highlightInsets:
@@ -745,13 +743,21 @@ class _DayColumnState extends State<_DayColumn> {
   Widget _buildTaskList(BuildContext context, List<RustTask> dayTasks) {
     // Rebuild as the drag crosses this cell's divider / moves between days, so
     // the incoming card reflows to its true landing spot in real time.
-    return ValueListenableBuilder<DropHover?>(
+    // Listens to the session ITSELF as well as to hover: the rail (and the room
+    // reserved for it) must appear the instant a timed card is lifted, before
+    // the cursor has crossed any cell.
+    return AnimatedBuilder(
+      animation: DragSession.instance,
+      builder: (context, _) => ValueListenableBuilder<DropHover?>(
       valueListenable: DragSession.instance.hover,
       builder: (context, _, _) {
         final cellDate =
             DateTime.fromMillisecondsSinceEpoch(widget.cell.dateTimestamp);
         final preview = DropFuture.forDate(cellDate);
-        return LayoutBuilder(builder: (context, constraints) {
+        return ValueListenableBuilder<Set<String>>(
+          valueListenable: DeleteSettle.deleting,
+          builder: (context, dying, _) =>
+              LayoutBuilder(builder: (context, constraints) {
           const itemH = 38.0; // compact HoverTaskCard: fixed 34 + 4 bottom margin
           const dividerH = 17.0; // _PremiumMiniDivider: 8 pad + '◇' glyph row
           const moreH = 18.0;
@@ -783,15 +789,29 @@ class _DayColumnState extends State<_DayColumn> {
               unallocated.insert(0, preview.projected);
             }
           }
-          final total = unallocated.length + allocated.length;
+          // A row playing its collapse is already gone as far as CAPACITY goes:
+          // that's what promotes the next card DURING the collapse instead of
+          // popping it in after. It is still emitted, so the collapse plays.
+          bool isDying(RustTask t) => dying.contains(t.id);
+          final dyingHere =
+              [...allocated, ...unallocated].where(isDying).length;
+          final total = unallocated.length + allocated.length - dyingHere;
 
           // An empty column is calm — blank, with the hover «+» as its quiet
           // affordance. The anatomy (timed / untimed / the divider) is taught by
           // the REAL seeded tasks a new user can touch, not by grey fake rows.
-          if (total == 0) return const SizedBox.shrink();
+          if (total == 0 && dyingHere == 0) return const SizedBox.shrink();
           final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
 
-          final avail = constraints.maxHeight - 12; // vertical padding
+          // While the Anytime rail is up it owns the bottom strip — give it the
+          // room instead of letting it cover the last card. This reflows ONCE
+          // per drag (at lift and at drop), never per cursor move, so it can't
+          // become a feedback loop.
+          final railRoom = DragSession.instance.isActive &&
+                  DragSession.instance.payload?.task.startTime != null
+              ? 26.0
+              : 0.0;
+          final avail = constraints.maxHeight - 12 - railRoom;
           var fit = ((avail - (bothGroups ? dividerH : 0)) / itemH)
               .floor()
               .clamp(0, total);
@@ -832,6 +852,10 @@ class _DayColumnState extends State<_DayColumn> {
           final items = <Widget>[];
           var count = 0;
           for (final t in allocated) {
+            if (isDying(t)) {
+              items.add(emit(t)); // collapsing — costs no slot
+              continue;
+            }
             if (count >= fit) break;
             items.add(emit(t));
             count++;
@@ -841,6 +865,10 @@ class _DayColumnState extends State<_DayColumn> {
                 key: widget.dividerKey, child: const _PremiumMiniDivider()));
           }
           for (final t in unallocated) {
+            if (isDying(t)) {
+              items.add(emit(t));
+              continue;
+            }
             if (count >= fit) break;
             items.add(emit(t));
             count++;
@@ -856,23 +884,34 @@ class _DayColumnState extends State<_DayColumn> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   ...items,
-                  if (hiddenCount > 0)
-                    Padding(
-                      key: const ValueKey('more'), // stays a label, never morphs
-                      padding: const EdgeInsets.only(top: 4, bottom: 2),
-                      child: Text('+$hiddenCount more',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontFamily: 'Inter', fontSize: 9,
-                            color: Colors.white.withOpacity(0.3),
-                          )),
-                    ),
+                  // Fades rather than cuts: on a delete the label reaches its
+                  // final value while the promoted card is still gliding up, so
+                  // the two cross instead of swapping in one frame.
+                  AnimatedOpacity(
+                    key: const ValueKey('more'),
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOut,
+                    opacity: hiddenCount > 0 ? 1.0 : 0.0,
+                    child: hiddenCount > 0
+                        ? Padding(
+                            padding: const EdgeInsets.only(top: 4, bottom: 2),
+                            child: Text('+$hiddenCount more',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontFamily: 'Inter', fontSize: 9,
+                                  color: Colors.white.withOpacity(0.3),
+                                )),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                 ],
               ),
             ),
           );
-        });
+        }),
+        );
       },
+      ),
     );
   }
 }

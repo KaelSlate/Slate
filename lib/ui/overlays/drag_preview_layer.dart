@@ -68,13 +68,15 @@ class _DragPreviewLayerState extends State<DragPreviewLayer>
 
   static const double _pillH = 34.0;
 
-  /// Carry it at the size it already is. A day-cell card is exactly the size of
-  /// the row it will land in, so a day→day flight now has NO resize at all —
-  /// it used to condense to 0.6× (clamped to ≥150), which made every carried
-  /// card the wrong size and every touchdown a jolt. Height still settles to the
-  /// compact row so a taller inbox card eases into its slot instead of snapping.
+  /// Carry it at the size of what it BECOMES, not the size it came from. Source
+  /// width was wrong for exactly the case it mattered: an inbox card is far
+  /// wider than a day row, so an inbox→day flight carried a card that had to
+  /// shrink on touchdown. The overview publishes its own row width, so inbox→day
+  /// and day→day now carry a pixel-identical card.
   Size _pillSize(DragPayload p) {
-    final w = p.sourceGlobalRect.width.clamp(120.0, 360.0);
+    final w = (DragSession.instance.overviewCardWidth ??
+            p.sourceGlobalRect.width)
+        .clamp(120.0, 360.0);
     return Size(w, _pillH);
   }
 

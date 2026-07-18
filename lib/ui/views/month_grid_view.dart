@@ -6,6 +6,7 @@ import '../../core/engine/slate_core_bridge.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/state/task_state.dart';
 import '../../core/interaction/drag_session.dart';
+import '../../core/interaction/delete_settle.dart';
 import '../widgets/hover_task_card.dart';
 import '../widgets/drag_source.dart';
 import '../widgets/drop_future.dart';
@@ -577,6 +578,17 @@ class _MonthPageState extends State<_MonthPage> {
     return ValueListenableBuilder<DropHover?>(
       valueListenable: DragSession.instance.hover,
       builder: (context, _, _) {
+        return ValueListenableBuilder<Set<String>>(
+          valueListenable: DeleteSettle.deleting,
+          builder: (context, dying, _) =>
+              _monthTaskColumn(dayTasks, date, dividerKey, dying),
+        );
+      },
+    );
+  }
+
+  Widget _monthTaskColumn(List<RustTask> dayTasks, DateTime date,
+      GlobalKey dividerKey, Set<String> dying) {
         final preview = DropFuture.forDate(date);
         // Keep the dragged card in the list (it dims + restores itself and stays
         // in DragCardRegistry so the flight lands on it). Splice the honey
@@ -598,7 +610,13 @@ class _MonthPageState extends State<_MonthPage> {
             unallocated.insert(0, preview.projected);
           }
         }
-        final total = unallocated.length + allocated.length;
+        // A collapsing row is already gone for CAPACITY — that is what promotes
+        // the next card DURING the collapse instead of popping it in after, and
+        // it is what stops «+N more» from sitting for a beat in the slot the
+        // promoted card is about to take.
+        bool isDying(RustTask t) => dying.contains(t.id);
+        final dyingHere = [...allocated, ...unallocated].where(isDying).length;
+        final total = unallocated.length + allocated.length - dyingHere;
         // The incoming card is always shown — never capped away mid-drop.
         final cap = showPreview ? 3 : 2;
 
@@ -639,6 +657,10 @@ class _MonthPageState extends State<_MonthPage> {
         final items = <Widget>[];
         var count = 0;
         for (final t in allocated) {
+          if (isDying(t)) {
+            items.add(emit(t)); // collapsing — costs no slot
+            continue;
+          }
           if (count >= cap) break;
           items.add(emit(t));
           count++;
@@ -648,35 +670,50 @@ class _MonthPageState extends State<_MonthPage> {
               key: dividerKey, child: const _PremiumMiniDivider()));
         }
         for (final t in unallocated) {
+          if (isDying(t)) {
+            items.add(emit(t));
+            continue;
+          }
           if (count >= cap) break;
           items.add(emit(t));
           count++;
         }
         final hiddenCount = total - count;
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ...items,
-            if (hiddenCount > 0)
+        // AnimatedSize: the promoted card GLIDES into the freed slot instead of
+        // snapping (manifest §7 — collapse + fade, the rest pulls up smoothly).
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          alignment: Alignment.topCenter,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ...items,
+              // Keyed so it stays a LABEL (unkeyed, Flutter reconciled it with a
+              // card by position and the survivor "grew out of" it), and faded
+              // so it crosses with the promoted card instead of being cut out.
               IgnorePointer(
-                // Keyed so it stays a LABEL: unkeyed, deleting a row let Flutter
-                // reconcile this text with a card by position, so the survivor
-                // visibly "grew out of" the +N more line.
                 key: const ValueKey('more'),
-                child: Text(
-                  '+$hiddenCount more',
-                  style: TextStyle(
-                    fontFamily: 'Inter',
-                    fontSize: 8.5,
-                    color: Colors.white.withOpacity(0.22),
-                  ),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOut,
+                  opacity: hiddenCount > 0 ? 1.0 : 0.0,
+                  child: hiddenCount > 0
+                      ? Text(
+                          '+$hiddenCount more',
+                          style: TextStyle(
+                            fontFamily: 'Inter',
+                            fontSize: 8.5,
+                            color: Colors.white.withOpacity(0.22),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
                 ),
               ),
-          ],
+            ],
+          ),
         );
-      },
-    );
   }
 
   Widget _buildDayCell(int gridIndex, int day, DateTime date, bool isToday,
@@ -692,10 +729,9 @@ class _MonthPageState extends State<_MonthPage> {
       taskState: widget.taskState,
       settleTopOffset: 34,
       settleHeight: 24,
-      // A month cell shows two rows — there is no honest room to aim at a
-      // group, and a 14px "unscheduled" sliver would be a lie. So a drop here
-      // just moves the day and KEEPS the time; zoom into the day to re-schedule.
-      splitTime: false,
+      // Shorter rail — a month cell is ~90px wide. It overlays the «+N more»
+      // line, which means nothing mid-drag anyway.
+      railHeight: 15,
       highlightRadius: BorderRadius.circular(AppTheme.radiusXLarge),
       builder: (dividerKey) => MouseRegion(
       onEnter: (_) {
