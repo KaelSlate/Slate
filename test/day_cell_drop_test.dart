@@ -14,9 +14,10 @@ import 'package:slate/ui/widgets/drop_future.dart';
 ///
 /// Aiming at a group is retired. The BODY of the cell means "move it here, keep
 /// the hour" — the calendar default, so nothing can surprise a new user. The
-/// "Anytime" RAIL pinned to the bottom edge means "clear the time". The rail is
-/// a constant offset from that edge, so unlike every boundary before it, the
-/// drop preview cannot move the line that decides the preview.
+/// "Anytime" RAIL at the head of the task area, under the day's own head, means
+/// "clear the time". The rail is a constant offset from the cell's TOP, so
+/// unlike every boundary before it, the drop preview cannot move the line that
+/// decides the preview.
 late TaskState ts;
 
 /// Cell geometry — deliberately fixed so the maths is checkable by hand.
@@ -27,8 +28,12 @@ const double cellH = 600;
 const double settleTop = 96;
 const double railH = 22;
 
-/// Global Y of the rail's top edge. One number, whatever the day holds.
-double railTop([double h = railH]) => cellTop + cellH - h;
+/// Global Y of the rail's top edge — the head of the task area, right under the
+/// day's own head. One number, whatever the day holds.
+double railTop([double h = railH]) => cellTop + settleTop;
+
+/// A Y that is unambiguously the cell BODY (below the rail and its slop).
+double bodyY([double h = railH]) => railTop(h) + h + 40;
 
 /// Each test gets its OWN day so nothing depends on what another left behind.
 DateTime day(int n) => DateTime(2026, 8, n);
@@ -140,7 +145,7 @@ void main() {
     await tester.pumpWidget(cellHarness(date: dst));
     await tester.pump();
 
-    await dragTo(tester, payloadFor(t, src), cellTop + 200);
+    await dragTo(tester, payloadFor(t, src), bodyY());
     final after = ts.tasks.firstWhere((x) => x.id == t.id);
 
     expect(after.startTime, 570, reason: 'the hour survives verbatim');
@@ -185,7 +190,7 @@ void main() {
       await tester.pump();
       final p = payloadFor(t, src);
       DragSession.instance.begin(p, const Offset(10, 10));
-      expect(modeAt(p, railTop() - 10), 'keep', reason: 'body on ${dst.day}');
+      expect(modeAt(p, bodyY()), 'keep', reason: 'body on ${dst.day}');
       expect(modeAt(p, railTop() + 8), 'clear', reason: 'rail on ${dst.day}');
       DragSession.instance.debugReset();
     }
@@ -200,7 +205,7 @@ void main() {
 
     final p = payloadFor(t, src);
     DragSession.instance.begin(p, const Offset(10, 10));
-    expect(modeAt(p, cellTop + 120), 'whole', reason: 'body: no choice');
+    expect(modeAt(p, bodyY()), 'whole', reason: 'body: no choice');
     expect(modeAt(p, railTop() + 8), 'whole',
         reason: 'and no rail either — there is nothing to choose');
 
@@ -223,7 +228,7 @@ void main() {
 
     final p = payloadFor(t, d);
     DragSession.instance.begin(p, const Offset(10, 10));
-    expect(modeAt(p, cellTop + 150), 'reject', reason: 'nothing would change');
+    expect(modeAt(p, bodyY()), 'reject', reason: 'nothing would change');
     expect(modeAt(p, railTop() + 8), 'clear',
         reason: 're-filing INTO the pool on the same day is the whole point');
 
@@ -243,7 +248,7 @@ void main() {
     final p = payloadFor(t, src);
     DragSession.instance.begin(p, const Offset(10, 10));
 
-    expect(modeAt(p, cellTop + 200), 'keep');
+    expect(modeAt(p, bodyY()), 'keep');
     final keep = DropFuture.forDate(dst)!;
     expect(keep.keepsTime, isTrue);
     expect(keep.projected.startTime, 570, reason: 'the card lands WITH 09:30');
@@ -269,7 +274,7 @@ void main() {
       await tester.pump();
       final p = payloadFor(t, src);
       DragSession.instance.begin(p, const Offset(10, 10));
-      expect(modeAt(p, cellTop + 200), 'keep', reason: 'divider=$dividerAt');
+      expect(modeAt(p, bodyY()), 'keep', reason: 'divider=$dividerAt');
       expect(modeAt(p, railTop() + 8), 'clear', reason: 'divider=$dividerAt');
       DragSession.instance.debugReset();
     }
@@ -284,7 +289,7 @@ void main() {
 
     final p = payloadFor(t, src);
     DragSession.instance.begin(p, const Offset(10, 10));
-    expect(modeAt(p, railTop(15) - 10), 'keep');
+    expect(modeAt(p, bodyY(15)), 'keep');
     expect(modeAt(p, railTop(15) + 5), 'clear');
 
     DragSession.instance.drop();

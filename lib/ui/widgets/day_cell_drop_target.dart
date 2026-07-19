@@ -118,15 +118,16 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return !_isSameDay(p) || p.task.startTime != null;
   }
 
-  /// Global Y of the rail's top edge. A CONSTANT offset from the cell's bottom —
-  /// it owes nothing to the cell's content, so the "show the future" preview
-  /// can never move the line that decides the preview. That is what retires the
-  /// flicker/teleport loop for good.
-  double _railTopGlobal(Rect r) {
-    final inset = widget.highlightInsets.bottom;
-    return (r.bottom - inset - widget.railHeight)
-        .clamp(r.top, r.bottom);
-  }
+  /// Local Y of the rail's top edge: the head of the task area, right under the
+  /// day's own head. A CONSTANT offset from the cell's TOP — it owes nothing to
+  /// the cell's content, so the "show the future" preview can never move the
+  /// line that decides the preview. That is what retires the flicker/teleport
+  /// loop for good.
+  double get _railTopLocal => widget.settleTopOffset;
+
+  /// Aiming slop. The strip is thin by design; the zone that answers to it is
+  /// not — a drop target you have to hit precisely is a target you fight.
+  static const double _slop = 10;
 
   /// 'whole' — an untimed task has exactly ONE destination (unallocated), so no
   /// choice and no rail: the day accepts it anywhere.
@@ -134,7 +135,13 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   String _modeFor(Offset globalPos, DragPayload p) {
     if (p.task.startTime == null) return 'whole';
     final r = globalRect();
-    if (r != null && globalPos.dy >= _railTopGlobal(r)) return 'clear';
+    if (r != null) {
+      final top = r.top + _railTopLocal;
+      final dy = globalPos.dy;
+      if (dy >= top - _slop && dy <= top + widget.railHeight + _slop) {
+        return 'clear';
+      }
+    }
     return _isSameDay(p) ? 'reject' : 'keep';
   }
 
@@ -165,9 +172,8 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     if (r == null) return const DropResult();
     // First-frame estimate only — the refine-to-card path corrects it to the
     // real row as soon as the list has laid the new card out.
-    final top = (mode == 'keep'
-            ? r.top + widget.settleTopOffset
-            : _railTopGlobal(r) - widget.settleHeight - 6)
+    final head = r.top + widget.settleTopOffset;
+    final top = (mode == 'keep' ? head : head + widget.railHeight + 6)
         .clamp(r.top, r.bottom - widget.settleHeight);
     return DropResult(
       settleGlobalRect:
@@ -216,18 +222,25 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
             ),
           ),
         ),
-        // The home of "no time" — see AnytimeRail. Pinned to the bottom edge,
-        // outside the list's layout, so it can never reflow what it decides.
+        // The home of "no time" — see AnytimeRail. Sits at the head of the task
+        // area, outside the list's layout, so it can never reflow what it
+        // decides. Revealed only on the day the cursor is addressing.
         Positioned(
-          left: widget.highlightInsets.left + 4,
-          right: widget.highlightInsets.right + 4,
-          bottom: widget.highlightInsets.bottom + 3,
+          left: widget.highlightInsets.left + 6,
+          right: widget.highlightInsets.right + 6,
+          top: _railTopLocal,
           child: ValueListenableBuilder<DropHover?>(
             valueListenable: DragSession.instance.hover,
-            builder: (_, h, _) => AnytimeRail(
-              armed: h?.zoneId == id && h?.cellMode == 'clear',
-              height: widget.railHeight,
-            ),
+            builder: (_, h, _) {
+              final here = h?.zoneId == id;
+              final mode = h?.cellMode;
+              return AnytimeRail(
+                // Every mode but 'whole' — an untimed task has no choice to make.
+                visible: here && mode != null && mode != 'whole',
+                armed: here && mode == 'clear',
+                height: widget.railHeight,
+              );
+            },
           ),
         ),
       ],

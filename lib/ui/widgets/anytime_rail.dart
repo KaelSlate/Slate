@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../core/interaction/drag_session.dart';
 import '../../core/theme/app_theme.dart';
 
 /// The home of "no time".
@@ -17,42 +16,47 @@ import '../../core/theme/app_theme.dart';
 /// never be surprised); this rail means "any time that day".
 ///
 /// It only exists while a TIMED task is in the air — an untimed one has a single
-/// possible destination, so there is nothing to choose. It blooms on EVERY day
-/// cell at once, not just the hovered one: seven quiet strips appearing across
-/// the week is the teaching moment, and no coach line is needed.
+/// possible destination, so there is nothing to choose — and only on the day the
+/// cursor is actually over. Seven rails at once was noise; the choice belongs to
+/// the day you are addressing, and it appears the moment you address it.
 ///
-/// Being an overlay pinned to the cell's bottom edge is load-bearing, not
-/// cosmetic: the boundary is a constant offset from that edge, so the preview
-/// can never move the line that decides the preview. That closes the
-/// flicker/teleport class of bug by construction.
+/// It sits at the TOP of the day's task area, right under the day's head, not on
+/// the cell's floor: the floor is a long drag away, and "this day, no particular
+/// hour" belongs next to the day's identity, not beneath its last row.
+///
+/// Being an overlay is load-bearing, not cosmetic: the boundary is a constant
+/// offset from the cell's top, so the preview can never move the line that
+/// decides the preview. That closes the flicker/teleport class of bug by
+/// construction.
 class AnytimeRail extends StatelessWidget {
-  /// True while the cursor is on the rail (mode == 'clear').
+  /// The cursor is over this day and a timed task is in the air.
+  final bool visible;
+
+  /// The cursor is on the rail itself (mode == 'clear').
   final bool armed;
   final double height;
 
-  const AnytimeRail({super.key, required this.armed, this.height = 22});
+  const AnytimeRail({
+    super.key,
+    required this.visible,
+    required this.armed,
+    this.height = 22,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: DragSession.instance,
-      builder: (context, _) {
-        final s = DragSession.instance;
-        final show = s.isActive && s.payload?.task.startTime != null;
-        return IgnorePointer(
-          child: AnimatedSlide(
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeOutCubic,
-            offset: show ? Offset.zero : const Offset(0, 0.35),
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 160),
-              curve: Curves.easeOut,
-              opacity: show ? 1.0 : 0.0,
-              child: _strip(),
-            ),
-          ),
-        );
-      },
+    return IgnorePointer(
+      child: AnimatedSlide(
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOutCubic,
+        offset: visible ? Offset.zero : const Offset(0, -0.35),
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          opacity: visible ? 1.0 : 0.0,
+          child: _strip(),
+        ),
+      ),
     );
   }
 

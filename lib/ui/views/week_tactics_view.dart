@@ -573,8 +573,26 @@ class _DayColumn extends StatefulWidget {
 class _DayColumnState extends State<_DayColumn> {
   bool _isHovered = false; // Phase 4.1: local hover for _HoverGlowBackground
 
+  /// The pointer is genuinely here AND nothing is flying. Mid-drag the cell
+  /// shows the drop chrome instead — but the hover itself is never forgotten,
+  /// so it simply reappears when the drag ends under a still cursor.
+  bool get _showHover => _isHovered && !DragSession.hoverSuppressed;
+
+  @override
+  void initState() {
+    super.initState();
+    DragSession.instance.addListener(_onDragPhase);
+  }
+
+  // Nothing moves when a drag ends under a motionless cursor, so the revival
+  // has to be driven by the session, not by a mouse event that never comes.
+  void _onDragPhase() {
+    if (mounted && _isHovered) setState(() {});
+  }
+
   @override
   void dispose() {
+    DragSession.instance.removeListener(_onDragPhase);
     super.dispose();
   }
 
@@ -605,10 +623,13 @@ class _DayColumnState extends State<_DayColumn> {
     // No nested MouseRegions on the background — eliminates flicker.
     Widget col = MouseRegion(
       onEnter: (_) {
-        // Mid-drag the cell shows the drop wash instead — no hover chrome.
-        if (DragSession.hoverSuppressed) return;
+        // ALWAYS record it, even mid-drag. Discarding the enter here is why the
+        // cell stayed dead after a drop: the pointer never left, so there was no
+        // second enter to revive it — you had to leave the card and come back.
+        // Only the PAINT is suppressed (see _showHover), and that comes back on
+        // its own the moment the session goes idle.
         setState(() => _isHovered = true);
-        widget.onHover?.call(true);
+        if (!DragSession.hoverSuppressed) widget.onHover?.call(true);
       },
       onExit: (_) {
         setState(() => _isHovered = false);
@@ -624,7 +645,7 @@ class _DayColumnState extends State<_DayColumn> {
               // Bottom layer: hover background driven by parent state — no flicker
               _HoverGlowBackground(
                 isToday: widget.cell.isToday,
-                isHovered: _isHovered,
+                isHovered: _showHover,
               ),
               // Top layer: content
               Positioned.fill(
@@ -704,11 +725,10 @@ class _DayColumnState extends State<_DayColumn> {
                   top: 13,
                   right: 12,
                   child: IgnorePointer(
-                    ignoring: !_isHovered,
+                    ignoring: !_showHover,
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 140),
-                      opacity:
-                          _isHovered && !DragSession.hoverSuppressed ? 1.0 : 0.0,
+                      opacity: _showHover ? 1.0 : 0.0,
                       child: _DayAddButton(
                         onTap: () => widget.onDayAdd!(
                             DateTime.fromMillisecondsSinceEpoch(
@@ -803,10 +823,11 @@ class _DayColumnState extends State<_DayColumn> {
           if (total == 0 && dyingHere == 0) return const SizedBox.shrink();
           final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
 
-          // While the Anytime rail is up it owns the bottom strip — give it the
-          // room instead of letting it cover the last card. This reflows ONCE
-          // per drag (at lift and at drop), never per cursor move, so it can't
-          // become a feedback loop.
+          // The rail owns the head of the task area — give it the room rather
+          // than let it cover the first card. Reserved on EVERY column while a
+          // timed drag is up, even though the rail only shows on the hovered
+          // one: reserving per-hover would reflow the list every time the cursor
+          // crossed a column. This way it reflows ONCE at lift and once at drop.
           final railRoom = DragSession.instance.isActive &&
                   DragSession.instance.payload?.task.startTime != null
               ? 26.0
@@ -878,8 +899,10 @@ class _DayColumnState extends State<_DayColumn> {
           // ClipRect: belt-and-braces — whatever happens to card heights in the
           // future, nothing may ever bleed past the day card's frame again.
           return ClipRect(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            child: AnimatedPadding(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOutCubic,
+              padding: EdgeInsets.fromLTRB(6, 6 + railRoom, 6, 6),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [

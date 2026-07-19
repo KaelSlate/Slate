@@ -462,8 +462,23 @@ class _MonthPage extends StatefulWidget {
 
 class _MonthPageState extends State<_MonthPage> {
   int _hoveredIndex = -1;
+
+  @override
+  void initState() {
+    super.initState();
+    DragSession.instance.addListener(_onDragPhase);
+  }
+
+  // Two jobs, both driven by the session rather than by mouse events: the cells
+  // make room for the rail at lift, and the hover revives at drop — a drag
+  // ending under a motionless cursor produces no mouse event at all.
+  void _onDragPhase() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    DragSession.instance.removeListener(_onDragPhase);
     super.dispose();
   }
 
@@ -617,8 +632,12 @@ class _MonthPageState extends State<_MonthPage> {
         bool isDying(RustTask t) => dying.contains(t.id);
         final dyingHere = [...allocated, ...unallocated].where(isDying).length;
         final total = unallocated.length + allocated.length - dyingHere;
-        // The incoming card is always shown — never capped away mid-drop.
-        final cap = showPreview ? 3 : 2;
+        // The rail takes the head of the two-row area while a timed drag is up,
+        // so one row steps aside for it. Mid-drag you are placing a card, not
+        // reading the roster — and the incoming card is never the one capped.
+        final railUp = DragSession.instance.isActive &&
+            DragSession.instance.payload?.task.startTime != null;
+        final cap = (showPreview ? 3 : 2) - (railUp ? 1 : 0);
 
         bool isPreview(RustTask t) =>
             showPreview && identical(t, preview.projected);
@@ -682,7 +701,11 @@ class _MonthPageState extends State<_MonthPage> {
 
         // AnimatedSize: the promoted card GLIDES into the freed slot instead of
         // snapping (manifest §7 — collapse + fade, the rest pulls up smoothly).
-        return AnimatedSize(
+        return AnimatedPadding(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          padding: EdgeInsets.only(top: railUp ? 18 : 0),
+          child: AnimatedSize(
           duration: const Duration(milliseconds: 160),
           curve: Curves.easeOut,
           alignment: Alignment.topCenter,
@@ -713,12 +736,14 @@ class _MonthPageState extends State<_MonthPage> {
               ),
             ],
           ),
+          ),
         );
   }
 
   Widget _buildDayCell(int gridIndex, int day, DateTime date, bool isToday,
       bool isPast, List<RustTask> dayTasks) {
-    final isHovered = _hoveredIndex == gridIndex;
+    final isHovered =
+        _hoveredIndex == gridIndex && !DragSession.hoverSuppressed;
     final totalTasks = dayTasks.length;
     final completedTasks = dayTasks.where((t) => t.isCompleted).length;
     final dayOpacity = isPast && !isToday ? 0.45 : 1.0;
@@ -735,10 +760,11 @@ class _MonthPageState extends State<_MonthPage> {
       highlightRadius: BorderRadius.circular(AppTheme.radiusXLarge),
       builder: (dividerKey) => MouseRegion(
       onEnter: (_) {
-        // Mid-drag the cell shows the drop wash instead — no hover chrome.
-        if (DragSession.hoverSuppressed) return;
+        // ALWAYS record it, even mid-drag: discarding the enter here is why the
+        // cell stayed dead after a drop — the pointer never left, so no second
+        // enter ever came. Only the PAINT is suppressed (isHovered below).
         setState(() => _hoveredIndex = gridIndex);
-        widget.onDayHover?.call(date);
+        if (!DragSession.hoverSuppressed) widget.onDayHover?.call(date);
       },
       onExit: (_) => setState(() {
         if (_hoveredIndex == gridIndex) _hoveredIndex = -1;
