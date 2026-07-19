@@ -125,6 +125,9 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   /// loop for good.
   double get _railTopLocal => widget.settleTopOffset;
 
+  static String _fmt(int m) =>
+      '${((m ~/ 60) % 24).toString().padLeft(2, '0')}:${(m % 60).toString().padLeft(2, '0')}';
+
   /// Aiming slop. The strip is thin by design; the zone that answers to it is
   /// not — a drop target you have to hit precisely is a target you fight.
   static const double _slop = 10;
@@ -234,10 +237,12 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
             builder: (_, h, _) {
               final here = h?.zoneId == id;
               final mode = h?.cellMode;
+              final min = DragSession.instance.payload?.task.startTime;
               return AnytimeRail(
                 // Every mode but 'whole' — an untimed task has no choice to make.
                 visible: here && mode != null && mode != 'whole',
                 armed: here && mode == 'clear',
+                fromTime: min == null ? null : _fmt(min),
                 height: widget.railHeight,
               );
             },

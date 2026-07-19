@@ -823,16 +823,11 @@ class _DayColumnState extends State<_DayColumn> {
           if (total == 0 && dyingHere == 0) return const SizedBox.shrink();
           final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
 
-          // The rail owns the head of the task area — give it the room rather
-          // than let it cover the first card. Reserved on EVERY column while a
-          // timed drag is up, even though the rail only shows on the hovered
-          // one: reserving per-hover would reflow the list every time the cursor
-          // crossed a column. This way it reflows ONCE at lift and once at drop.
-          final railRoom = DragSession.instance.isActive &&
-                  DragSession.instance.payload?.task.startTime != null
-              ? 26.0
-              : 0.0;
-          final avail = constraints.maxHeight - 12 - railRoom;
+          // NOTHING here knows about the rail. It floats above the rows and
+          // never displaces them — reserving a slot made every column twitch
+          // downward the instant a card was picked up, which is the cheap
+          // version of the idea.
+          final avail = constraints.maxHeight - 12;
           var fit = ((avail - (bothGroups ? dividerH : 0)) / itemH)
               .floor()
               .clamp(0, total);
@@ -899,10 +894,8 @@ class _DayColumnState extends State<_DayColumn> {
           // ClipRect: belt-and-braces — whatever happens to card heights in the
           // future, nothing may ever bleed past the day card's frame again.
           return ClipRect(
-            child: AnimatedPadding(
-              duration: const Duration(milliseconds: 160),
-              curve: Curves.easeOutCubic,
-              padding: EdgeInsets.fromLTRB(6, 6 + railRoom, 6, 6),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [

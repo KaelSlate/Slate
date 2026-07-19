@@ -632,12 +632,9 @@ class _MonthPageState extends State<_MonthPage> {
         bool isDying(RustTask t) => dying.contains(t.id);
         final dyingHere = [...allocated, ...unallocated].where(isDying).length;
         final total = unallocated.length + allocated.length - dyingHere;
-        // The rail takes the head of the two-row area while a timed drag is up,
-        // so one row steps aside for it. Mid-drag you are placing a card, not
-        // reading the roster — and the incoming card is never the one capped.
-        final railUp = DragSession.instance.isActive &&
-            DragSession.instance.payload?.task.startTime != null;
-        final cap = (showPreview ? 3 : 2) - (railUp ? 1 : 0);
+        // The rail floats over the rows and never displaces them, so the cap is
+        // untouched by the drag.
+        final cap = showPreview ? 3 : 2;
 
         bool isPreview(RustTask t) =>
             showPreview && identical(t, preview.projected);
@@ -701,11 +698,7 @@ class _MonthPageState extends State<_MonthPage> {
 
         // AnimatedSize: the promoted card GLIDES into the freed slot instead of
         // snapping (manifest §7 — collapse + fade, the rest pulls up smoothly).
-        return AnimatedPadding(
-          duration: const Duration(milliseconds: 160),
-          curve: Curves.easeOutCubic,
-          padding: EdgeInsets.only(top: railUp ? 18 : 0),
-          child: AnimatedSize(
+        return AnimatedSize(
           duration: const Duration(milliseconds: 160),
           curve: Curves.easeOut,
           alignment: Alignment.topCenter,
@@ -735,7 +728,6 @@ class _MonthPageState extends State<_MonthPage> {
                 ),
               ),
             ],
-          ),
           ),
         );
   }

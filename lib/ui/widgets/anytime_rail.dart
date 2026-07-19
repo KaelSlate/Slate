@@ -24,6 +24,11 @@ import '../../core/theme/app_theme.dart';
 /// the cell's floor: the floor is a long drag away, and "this day, no particular
 /// hour" belongs next to the day's identity, not beneath its last row.
 ///
+/// It FLOATS — opaque, shadowed, above the rows. It must not push the day's
+/// tasks around: reserving a slot for it made every column twitch downward the
+/// instant you picked a card up, which is the cheap version of this idea. A drop
+/// target is a layer, not a row.
+///
 /// Being an overlay is load-bearing, not cosmetic: the boundary is a constant
 /// offset from the cell's top, so the preview can never move the line that
 /// decides the preview. That closes the flicker/teleport class of bug by
@@ -36,10 +41,16 @@ class AnytimeRail extends StatelessWidget {
   final bool armed;
   final double height;
 
+  /// The hour the dragged task is carrying, e.g. '09:30'. Shown being handed
+  /// over — "09:30 → Anytime" — because a bare noun never said that the time
+  /// would be REMOVED. The rail states the change it makes.
+  final String? fromTime;
+
   const AnytimeRail({
     super.key,
     required this.visible,
     required this.armed,
+    this.fromTime,
     this.height = 22,
   });
 
@@ -62,6 +73,7 @@ class AnytimeRail extends StatelessWidget {
 
   Widget _strip() {
     final compact = height < 19;
+    final ink = Colors.white.withValues(alpha: armed ? 0.92 : 0.55);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 140),
       curve: Curves.easeOut,
@@ -69,25 +81,62 @@ class AnytimeRail extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(compact ? 6 : 8),
-        color: AppTheme.honey.withValues(alpha: armed ? 0.12 : 0.04),
+        // OPAQUE — it floats over the rows, so it may not be see-through, or
+        // the titles underneath read straight through the label.
+        color: Color.alphaBlend(
+          AppTheme.honey.withValues(alpha: armed ? 0.22 : 0.10),
+          AppTheme.background,
+        ),
         border: Border.all(
-          color: AppTheme.honey.withValues(alpha: armed ? 0.55 : 0.30),
+          color: AppTheme.honey.withValues(alpha: armed ? 0.70 : 0.35),
           width: armed ? 1.0 : 0.5,
         ),
-        boxShadow: armed
-            ? const [BoxShadow(color: AppTheme.honeyGlow, blurRadius: 10)]
-            : null,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.35),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+          if (armed)
+            const BoxShadow(color: AppTheme.honeyGlow, blurRadius: 12),
+        ],
       ),
-      child: Text(
-        'Anytime',
-        maxLines: 1,
-        overflow: TextOverflow.clip,
-        style: AppFonts.inter(
-          fontSize: compact ? 8.0 : 9.0,
-          fontWeight: FontWeight.w500,
-          letterSpacing: 0.4,
-          color: Colors.white.withValues(alpha: armed ? 0.85 : 0.45),
-        ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // The hour, then the hand-over. Seeing 09:30 sitting on the strip that
+          // is about to take it is the whole explanation — no verb needed.
+          if (fromTime != null && !compact) ...[
+            Text(
+              fromTime!,
+              maxLines: 1,
+              style: AppFonts.robotoMono(
+                fontSize: 8.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: ink.withValues(alpha: ink.a * 0.60),
+                decoration: TextDecoration.lineThrough,
+                decorationColor: AppTheme.honey.withValues(alpha: 0.75),
+                decorationThickness: 1.4,
+              ),
+            ),
+            const SizedBox(width: 5),
+          ],
+          Flexible(
+            child: Text(
+              compact ? '→ Anytime' : 'Anytime',
+              maxLines: 1,
+              overflow: TextOverflow.clip,
+              style: AppFonts.inter(
+                fontSize: compact ? 8.0 : 9.0,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.4,
+                color: ink,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
