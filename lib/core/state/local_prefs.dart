@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'app_dirs.dart';
 
@@ -48,20 +47,11 @@ class LocalPrefs {
         if (await tmp.exists()) {
           // A crash between tmp-write and swap — the tmp IS the latest state.
           data = jsonDecode(await tmp.readAsString()) as Map<String, dynamic>;
-        } else {
-          // One-time migration from secure storage, where these never belonged.
-          const storage = FlutterSecureStorage();
-          final values = await Future.wait([
-            storage.read(key: _kViewPref),
-            storage.read(key: _kOnboarded),
-            storage.read(key: _kWelcomed),
-          ]);
-          data = {
-            if (values[0] != null) _kViewPref: values[0],
-            if (values[1] != null) _kOnboarded: values[1],
-            if (values[2] != null) _kWelcomed: values[2],
-          };
         }
+        // No file, no tmp → a new user. The old secure-storage migration
+        // branch that lived here resurrected onboarded/welcomed from the
+        // DPAPI vault after a deliberate data wipe — the welcome never
+        // played again. Stale keys in the vault are ignored for good.
       }
     } catch (_) {
       data = {}; // corrupt/unreadable prefs → sane defaults, never crash startup

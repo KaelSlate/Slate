@@ -27,6 +27,19 @@ void main() {
     } catch (_) {}
   });
 
+  test('no prefs on disk → true first-run defaults, nothing resurrected',
+      () async {
+    // The old secure-storage migration branch used to resurrect
+    // onboarded/welcomed from the DPAPI vault after a data wipe — the user
+    // wiped slate_data and never saw the welcome again. Absent file = new user.
+    final prefs = await LocalPrefs.load();
+
+    expect(prefs.onboarded, isFalse);
+    expect(prefs.welcomed, isFalse);
+    expect(prefs.seeded, isFalse);
+    expect(prefs.viewPref, isNull);
+  });
+
   test('a crashed write leaves only .tmp — load recovers it', () async {
     await File('${dir.path}\\prefs.json.tmp')
         .writeAsString('{"slate_view_pref":"month"}');
