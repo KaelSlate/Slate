@@ -62,7 +62,7 @@ class TaskState extends ChangeNotifier {
   List<RustTask> get tasks => _tasks;
   bool get loaded => _loaded;
 
-  /// Order for the «TO SCHEDULE» pool: importance first, freshest capture on top.
+  /// Order for the «ANYTIME» pool: importance first, freshest capture on top.
   /// `createdAt` is the task's DAY and `updatedAt` moves on every toggle, so the
   /// only honest recency signal is the store's insert order — reversed here.
   /// Neither key changes when a task is checked off, so nothing ever jumps.

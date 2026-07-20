@@ -241,7 +241,7 @@ void main() {
     await tester.pump();
     await g.moveBy(const Offset(0, 8));
     await tester.pump();
-    // Drop into the BOTTOM half of the pane (TO SCHEDULE) = clear the time.
+    // Drop anywhere in the pane = clear the time (it is one ANYTIME place).
     // The top half means "keep scheduled" (a no-op that springs back).
     await g.moveTo(Offset(c.dx, 620));
     await tester.pump(const Duration(milliseconds: 50));

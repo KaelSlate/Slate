@@ -17,6 +17,7 @@ import '../../core/interaction/timeline_math.dart';
 import '../overlays/time_line_painter.dart';
 import '../overlays/task_peek_layer.dart';
 import '../widgets/hover_task_card.dart';
+import '../widgets/drop_future.dart';
 import '../widgets/drag_source.dart';
 import '../widgets/desktop_scroll_wrapper.dart';
 import '../widgets/quiet_progress_ring.dart';
@@ -77,9 +78,8 @@ class _DayFlowViewState extends State<DayFlowView>
   // ── Drag & drop zones ──────────────────────────────────────────────────────
   final GlobalKey _ribbonKey = GlobalKey();
   final GlobalKey _planningPaneKey = GlobalKey();
-  // Live SCHEDULED/TO-SCHEDULE boundary — the pane zone reads its Y to decide
-  // keep-vs-clear for a timed payload. Null when either section is empty.
-  final GlobalKey _paneDividerKey = GlobalKey();
+  // The ANYTIME group head — a landing card flies to rest just below it.
+  final GlobalKey _anytimeKey = GlobalKey();
   late final _TimelineRibbonZone _ribbonZone;
   late final _PlanningPaneZone _paneZone;
 
@@ -443,24 +443,9 @@ class _DayFlowViewState extends State<DayFlowView>
                           ],
                         ),
                       ),
-                      child: Stack(
-                        fit: StackFit.passthrough,
-                        children: [
-                          _buildPlanningPane(),
-                          // Drop-hover wash. For a timed payload it splits at
-                          // the live SCHEDULED│TO-SCHEDULE divider: hover the
-                          // top = keep scheduled, bottom = clear time. The
-                          // idle half stays a faint prompt that a choice exists.
-                          Positioned.fill(
-                            child: IgnorePointer(
-                              child: _PaneDropWash(
-                                paneKey: _planningPaneKey,
-                                dividerKey: _paneDividerKey,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                      // No drop-wash layer: the pane shows the incoming card
+                      // itself (DropFuture), it does not describe the outcome.
+                      child: _buildPlanningPane(),
                     ),
                   ),
                   // Gradient Divider
@@ -807,8 +792,19 @@ class _DayFlowViewState extends State<DayFlowView>
                 builder: (context, _) {
                   final ghostRes = _smartNotifier.result;
                   final hasGhostList = _isAddingTask && !ghostRes.hasTime && ghostRes.cleanTitle.isNotEmpty;
+
+                  // Rebuild as a card enters/leaves the pane so the list can
+                  // show what the drop is about to do.
+                  return ValueListenableBuilder<DropHover?>(
+                      valueListenable: DragSession.instance.hover,
+                      builder: (context, hover, _) {
+                  // Our zone only — the ribbon leaves cellMode null today, but
+                  // gating on the id keeps the list honest if that changes.
+                  final preview = hover?.zoneId == _PlanningPaneZone.zoneId
+                      ? DropFuture.forDate(currentRibbonDate)
+                      : null;
                   final displayUnallocated = List<RustTask>.from(unallocated);
-                  
+
                   if (hasGhostList) {
                     displayUnallocated.insert(0, RustTask(
                       id: 'ghost',
@@ -819,6 +815,25 @@ class _DayFlowViewState extends State<DayFlowView>
                       tags: ghostRes.tags,
                     ));
                   }
+
+                  // Splice the incoming card in only when it isn't already in
+                  // this group; otherwise the real (dimmed) card is the show.
+                  final showPreview = preview != null &&
+                      !displayUnallocated
+                          .any((t) => t.id == preview.projected.id);
+                  // After the ghost — what you are typing stays the first row.
+                  if (showPreview) {
+                    displayUnallocated.insert(
+                        hasGhostList ? 1 : 0, preview.projected);
+                  }
+                  // The hour being handed over, struck through on the group
+                  // head. Same sentence the week's rail says.
+                  final st = DragSession.instance.payload?.task.startTime;
+                  final handOver =
+                      showPreview && !preview.keepsTime && st != null
+                          ? '${((st ~/ 60) % 24).toString().padLeft(2, '0')}'
+                              ':${(st % 60).toString().padLeft(2, '0')}'
+                          : null;
 
                   // #2 — Instant day swap (NO crossfade). The old AnimatedSwitcher
                   // faded the whole list out+in on EVERY day change while scrolling
@@ -862,18 +877,29 @@ class _DayFlowViewState extends State<DayFlowView>
                               }),
                             ],
 
-                            // ── Divider — also the live keep/clear drop boundary ──
+                            // ── Divider — decoration now, not a boundary ──────────
                             if (scheduled.isNotEmpty && displayUnallocated.isNotEmpty)
-                              KeyedSubtree(
-                                key: _paneDividerKey,
-                                child: const _ScheduleDivider(),
-                              ),
+                              const _ScheduleDivider(),
 
-                            // ── "To Schedule" section ──────────────────────────────
+                            // ── "Anytime" section ─────────────────────────────────
+                            // Not "TO SCHEDULE": that reads as unfinished debt.
+                            // No hour is a resting state, not a chore pending.
                             if (displayUnallocated.isNotEmpty) ...[
-                              _SectionLabel(label: 'TO SCHEDULE', count: displayUnallocated.length),
+                              _SectionLabel(
+                                key: _anytimeKey,
+                                label: 'ANYTIME',
+                                count: displayUnallocated.length,
+                                fromTime: handOver,
+                              ),
                               const SizedBox(height: 4),
                               ...displayUnallocated.map((t) {
+                                // The incoming card renders as itself — halo,
+                                // no time. Its own widget, never a DragSource.
+                                if (showPreview &&
+                                    identical(t, preview.projected)) {
+                                  return preview.card(
+                                      margin: const EdgeInsets.only(bottom: 5));
+                                }
                                 return Opacity(
                                   key: ValueKey(t.id),
                                   opacity: t.id == 'ghost' ? 0.5 : 1.0,
@@ -898,13 +924,17 @@ class _DayFlowViewState extends State<DayFlowView>
                             ],
 
                             // ── Empty state ───────────────────────────────────────
-                            if (dayTasks.isEmpty && !_isAddingTask)
+                            // Never alongside a landing card — "No tasks planned"
+                            // next to the card arriving is the pane contradicting
+                            // itself.
+                            if (dayTasks.isEmpty && !_isAddingTask && !showPreview)
                               _buildEmptyState(),
 
                             const SizedBox(height: 24),
                           ],
                         ),
                   );
+                      });
               },
             );
           },
@@ -1218,16 +1248,28 @@ class _HourColumnGridPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION LABEL — "TO SCHEDULE" / "SCHEDULED"
+// SECTION LABEL — "SCHEDULED" / "ANYTIME"
 // ═══════════════════════════════════════════════════════════════════════════
 
 class _SectionLabel extends StatelessWidget {
   final String label;
   final int count;
-  const _SectionLabel({required this.label, required this.count});
+
+  /// The hour a landing card is giving up, e.g. '14:30'. Struck through beside
+  /// the group name: seeing the time sitting on the group about to take it is
+  /// the whole explanation — no verb needed. Same sentence the week's rail says.
+  final String? fromTime;
+
+  const _SectionLabel({
+    super.key,
+    required this.label,
+    required this.count,
+    this.fromTime,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final armed = fromTime != null;
     return Padding(
       padding: const EdgeInsets.only(top: 10, bottom: 2),
       child: Row(
@@ -1238,9 +1280,25 @@ class _SectionLabel extends StatelessWidget {
               fontSize: 9,
               fontWeight: FontWeight.w700,
               letterSpacing: 1.5,
-              color: Colors.white.withOpacity(0.20),
+              color: Colors.white.withOpacity(armed ? 0.55 : 0.20),
             ),
           ),
+          if (armed) ...[
+            const SizedBox(width: 6),
+            Text(
+              fromTime!,
+              maxLines: 1,
+              style: AppFonts.robotoMono(
+                fontSize: 8.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: Colors.white.withValues(alpha: 0.40),
+                decoration: TextDecoration.lineThrough,
+                decorationColor: AppTheme.honey.withValues(alpha: 0.75),
+                decorationThickness: 1.4,
+              ),
+            ),
+          ],
           const SizedBox(width: 6),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
@@ -2096,34 +2154,26 @@ class _PlanningPaneZone extends DropZone {
       // nothing to offer the pane → rejected (spring back).
       (p.kind == DragSourceKind.planListCard && p.task.startTime != null);
 
-  /// Y of the live SCHEDULED│TO-SCHEDULE divider; falls back to a sane split
-  /// when a section is empty (divider not mounted).
-  double _splitY(Rect r) {
-    final div = state._paneDividerKey.currentContext?.findRenderObject()
-        as RenderBox?;
-    if (div != null && div.attached && div.hasSize) {
-      return div.localToGlobal(Offset.zero).dy + div.size.height / 2;
-    }
-    return r.top + (r.height * 0.40);
-  }
-
-  /// 'whole' (inbox → this day) · 'keep' (timed, stays scheduled — top) ·
-  /// 'clear' (timed → «TO SCHEDULE» — bottom) · 'reject' (nothing to do).
-  String _modeFor(Offset globalPos, DragPayload p) {
+  /// 'whole' (inbox → this day) · 'clear' (timed → Anytime) · 'reject'.
+  ///
+  /// No region split. The ribbon owns "at an hour", the pane owns "without
+  /// one", so a card dropped here has exactly ONE possible outcome — there is
+  /// nothing to aim at. The old keep/clear halves made the whole pane body a
+  /// target that did nothing, and hung the boundary on a divider that mounts
+  /// only when both sections are filled: on a day of only-scheduled tasks the
+  /// line silently fell to 40% of the pane with nothing on screen saying so.
+  String _modeFor(DragPayload p) {
     if (p.kind == DragSourceKind.inboxCard) return 'whole';
-    if (p.task.startTime == null) return 'reject';
-    final r = globalRect();
-    if (r == null) return 'reject';
-    return globalPos.dy >= _splitY(r) ? 'clear' : 'keep';
+    return p.task.startTime == null ? 'reject' : 'clear';
   }
 
   @override
   DropHover? hoverAt(Offset globalPos, DragPayload p) => DropHover(
         zoneId: id,
         targetDay: state._ribbonDate.value,
-        cellMode: _modeFor(globalPos, p) == 'whole'
-            ? null
-            : _modeFor(globalPos, p),
+        // Always a mode: DropFuture.forDate bails on a null one, and without it
+        // the pane could never show what it is about to do.
+        cellMode: _modeFor(p),
       );
 
   @override
@@ -2131,92 +2181,30 @@ class _PlanningPaneZone extends DropZone {
     final ts = state.widget.taskState;
     if (ts == null) return null;
     final day = state._ribbonDate.value;
-    final mode = _modeFor(globalPos, p);
-    if (mode == 'reject' || mode == 'keep') return null; // no-op → spring back
+    final mode = _modeFor(p);
+    if (mode == 'reject') return null; // spring back
     if (mode == 'whole') {
       ts.assignToDay(p.task, day); // inbox → this day, no time
     } else {
-      ts.unschedule(p.task, day); // clear time → «TO SCHEDULE»
+      ts.unschedule(p.task, day); // clear time → «ANYTIME»
     }
     final r = globalRect();
     if (r == null) return const DropResult();
-    final top = (mode == 'clear' ? _splitY(r) + 10 : r.top + 118)
-        .clamp(r.top, r.bottom - 44);
     return DropResult(
-      settleGlobalRect:
-          Rect.fromLTWH(r.left + AppTheme.spacing24, top, r.width - 40, 44),
-    );
-  }
-}
-
-/// Split drop-wash over the day planning pane. A timed payload gets two
-/// halves (keep on top, clear below) divided at the live SCHEDULED│TO-SCHEDULE
-/// boundary; an inbox card washes the whole pane. The hovered half is bright,
-/// the other a faint prompt.
-class _PaneDropWash extends StatelessWidget {
-  final GlobalKey paneKey;
-  final GlobalKey dividerKey;
-  const _PaneDropWash({required this.paneKey, required this.dividerKey});
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<DropHover?>(
-      valueListenable: DragSession.instance.hover,
-      builder: (_, h, __) {
-        final on = h?.zoneId == _PlanningPaneZone.zoneId;
-        final mode = on ? (h?.cellMode ?? 'whole') : 'off';
-        // Local Y of the divider inside the pane → where to split the wash.
-        double? splitLocal;
-        final paneBox = paneKey.currentContext?.findRenderObject() as RenderBox?;
-        final divBox = dividerKey.currentContext?.findRenderObject() as RenderBox?;
-        if (paneBox != null && paneBox.attached && paneBox.hasSize &&
-            divBox != null && divBox.attached && divBox.hasSize) {
-          final dy = divBox.localToGlobal(Offset.zero).dy + divBox.size.height / 2;
-          splitLocal = paneBox.globalToLocal(Offset(0, dy)).dy;
-        }
-        final whole = mode == 'whole';
-        final gap = whole ? 0.0 : 4.0;
-        final drawLine = splitLocal == null && !whole;
-        // Only the hovered zone lights; the other stays OFF.
-        final topOp = (whole || mode == 'keep') ? 1.0 : 0.0;
-        final bottomOp = (whole || mode == 'clear') ? 1.0 : 0.0;
-        return LayoutBuilder(builder: (context, c) {
-          final lineH = drawLine ? 0.5 : 0.0;
-          final maxTop =
-              (c.maxHeight - gap * 2 - lineH).clamp(0.0, c.maxHeight);
-          final split = (splitLocal ?? c.maxHeight * 0.40)
-              .clamp(0.0, c.maxHeight);
-          // stretch: without it the Expanded wash collapses to zero WIDTH.
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SizedBox(
-                  height: (split - gap).clamp(0.0, maxTop),
-                  child: _wash(topOp)),
-              SizedBox(height: gap),
-              // The pane already draws its divider — never duplicate it.
-              if (drawLine)
-                AnimatedOpacity(
-                  duration: const Duration(milliseconds: 120),
-                  opacity: on ? 1.0 : 0.0,
-                  child: Container(
-                      height: 0.5, color: Colors.white.withOpacity(0.14)),
-                ),
-              SizedBox(height: gap),
-              Expanded(child: _wash(bottomOp)),
-            ],
-          );
-        });
-      },
+      settleGlobalRect: Rect.fromLTWH(
+          r.left + AppTheme.spacing24, _settleTop(r), r.width - 40, 44),
     );
   }
 
-  Widget _wash(double opacity) => AnimatedOpacity(
-        duration: const Duration(milliseconds: 120),
-        opacity: opacity,
-        child: const DecoratedBox(
-            decoration: BoxDecoration(color: Color(0x0AFFFFFF))),
-      );
+  /// Rest on the group it just joined, so the flight ends on the row it became.
+  double _settleTop(Rect r) {
+    final box =
+        state._anytimeKey.currentContext?.findRenderObject() as RenderBox?;
+    final y = box != null && box.attached && box.hasSize
+        ? box.localToGlobal(Offset.zero).dy + box.size.height + 4
+        : r.top + 118;
+    return y.clamp(r.top, r.bottom - 44);
+  }
 }
 
 /// Snapped drop preview inside the ribbon: a slot block + floating time badge.
