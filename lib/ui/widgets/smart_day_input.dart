@@ -16,6 +16,10 @@ class SmartInputNotifier extends ChangeNotifier {
   ParseResult _result = const ParseResult();
   ParseResult get result => _result;
 
+  /// How many times this input was reset for a fresh capture — drives the
+  /// teaching-placeholder rotation (see [captureHints]).
+  int reveals = 0;
+
   void update(ParseResult r) {
     _result = r;
     notifyListeners();
@@ -23,8 +27,29 @@ class SmartInputNotifier extends ChangeNotifier {
 
   void clear() {
     _result = const ParseResult();
+    reveals++;
     notifyListeners();
   }
+}
+
+/// The placeholder is the syntax teacher. Nothing in the UI ever explains
+/// that «gym at 6pm #health !!» just works — a tooltip would be noise and a
+/// tour would be worse. So the ghost text you are about to type over IS the
+/// lesson: each reveal shows one real capture the parser fully understands.
+/// Index 0 stays the calm classic for the very first contact.
+/// Every example here MUST parse completely — an unparseable hint is a lie.
+const captureHints = [
+  'Type a task…',
+  'Call mom tomorrow 15:00',
+  'Gym at 6pm #health',
+  'Ship the draft fri !!',
+  'Plan the week 9-10am',
+];
+
+String captureHintFor(int reveals) {
+  if (reveals <= 0) return captureHints[0];
+  final teach = captureHints.length - 1;
+  return captureHints[1 + (reveals - 1) % teach];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -464,7 +489,7 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
                       height: 1.3,
                     ),
                     decoration: InputDecoration(
-                      hintText: 'Type a task...',
+                      hintText: captureHintFor(widget.notifier.reveals),
                       hintStyle: AppFonts.inter(
                         fontSize: 16,
                         fontWeight: FontWeight.w400,

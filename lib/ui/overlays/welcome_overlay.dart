@@ -189,6 +189,9 @@ class _GreetingMoment extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Every chord taken by other apps → teach the one key that DOES work
+    // instead of a chord that does nothing. Honest beats aspirational.
+    final active = QuickCaptureController.instance.hotkeyActive;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -234,8 +237,23 @@ class _GreetingMoment extends StatelessWidget {
           delay: const Duration(milliseconds: 500),
         ),
         const SizedBox(height: 54),
+        if (!active)
+          _Staged(
+            master: master,
+            startMs: 1500,
+            endMs: 2100,
+            rise: 8,
+            child: Text(
+              'The global capture chord is held by another app right now.',
+              style: AppFonts.inter(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.32),
+              ),
+            ),
+          ),
+        if (!active) const SizedBox(height: 18),
         _HotkeyRow(
-          label: QuickCaptureController.instance.hotkeyLabel,
+          label: active ? QuickCaptureController.instance.hotkeyLabel : 'C',
           master: master,
           press: press,
         ),
@@ -246,7 +264,9 @@ class _GreetingMoment extends StatelessWidget {
           endMs: 2900,
           rise: 8,
           child: Text(
-            'Press it — anywhere, anytime. Even over other apps.',
+            active
+                ? 'Press it — anywhere, anytime. Even over other apps.'
+                : 'Press C inside Slate — capture works all the same.',
             style: AppTheme.bodyLarge.copyWith(
               color: AppTheme.textSecondary,
               fontSize: 14,

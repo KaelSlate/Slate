@@ -24,6 +24,7 @@ import '../overlays/coach_whisper.dart';
 import '../overlays/drag_preview_layer.dart';
 import '../overlays/task_peek_layer.dart';
 import '../overlays/inbox_drawer.dart';
+import '../overlays/vault_gate.dart';
 import '../overlays/welcome_overlay.dart';
 import '../warmup/warmup_layer.dart';
 import '../widgets/slate_toast.dart';
@@ -742,6 +743,22 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
                   if (mounted) setState(() => _welcomeActive = false);
                 }),
               ),
+            // The vault didn't open → the honest gate takes the screen. No
+            // sample-task masquerade, no writes into the void; captures made
+            // meanwhile spill to a file and refile themselves later.
+            ValueListenableBuilder<EngineFailure?>(
+              valueListenable: ref.read(taskStateProvider).engineFailure,
+              builder: (context, failure, _) => failure == null
+                  ? const SizedBox.shrink()
+                  : Positioned.fill(
+                      child: VaultGate(
+                        failure: failure,
+                        onRetry: () => ref.read(taskStateProvider).retryEngine(),
+                        onStartFresh: () =>
+                            ref.read(taskStateProvider).startFreshVault(),
+                      ),
+                    ),
+            ),
             // ── Startup warmup: heavy surfaces render under an opaque veil ──
             if (_warmupPhase == _WarmupPhase.warming)
               Positioned.fill(

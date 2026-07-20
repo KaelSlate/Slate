@@ -3,9 +3,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
+import '../state/app_dirs.dart';
 import '../state/crash_log.dart';
 import '../state/export_service.dart';
 import '../state/local_prefs.dart';
@@ -64,8 +64,10 @@ class TrayShell with TrayListener {
 
     trayManager.addListener(this);
     await trayManager.setIcon('assets/icons/tray_icon.ico');
-    await trayManager.setToolTip(
-        'Slate — ${QuickCaptureController.instance.hotkeyLabel} to capture');
+    // Honest chord only: if none registered, don't advertise a dead one.
+    await trayManager.setToolTip(QuickCaptureController.instance.hotkeyActive
+        ? 'Slate — ${QuickCaptureController.instance.hotkeyLabel} to capture'
+        : 'Slate');
     await _rebuildMenu();
   }
 
@@ -78,8 +80,9 @@ class TrayShell with TrayListener {
       MenuItem(key: 'open', label: 'Open Slate'),
       MenuItem(
           key: 'capture',
-          label:
-              'Quick Capture (${QuickCaptureController.instance.hotkeyLabel})'),
+          label: QuickCaptureController.instance.hotkeyActive
+              ? 'Quick Capture (${QuickCaptureController.instance.hotkeyLabel})'
+              : 'Quick Capture'),
       MenuItem.separator(),
       MenuItem(key: 'export', label: 'Export data…'),
       MenuItem(key: 'report', label: 'Report a problem'),
@@ -125,6 +128,10 @@ class TrayShell with TrayListener {
 
   Future<void> quit() async {
     try {
+      // Today's backup leaves with the freshest state (tiny JSON, ~ms).
+      await taskState?.writeSafetyBackup(refresh: true);
+    } catch (_) {/* quitting must never hang on the safety net */}
+    try {
       SlateCore().shutdownEngine(); // drain writes + WAL checkpoint
     } finally {
       await trayManager.destroy();
@@ -161,8 +168,7 @@ class TrayShell with TrayListener {
         try {
           // Testers can't be asked to hunt for files — open the log folder.
           final path = CrashLog.folderPath ??
-              '${(await getApplicationDocumentsDirectory()).path}'
-                  '\\slate_data\\logs';
+              '${(await AppDirs.dataDir()).path}\\logs';
           Directory(path).createSync(recursive: true);
           CrashLog.dumpTrace(); // fresh slate_trace.txt lands in that folder
           await Process.start('explorer.exe', [path]);

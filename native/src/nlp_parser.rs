@@ -13,6 +13,10 @@
 //! Time patterns supported:
 //!   - `14:00`, `14.00`
 //!   - `14:00-15:30` (range)
+//!   - `5pm`, `9 am`, `5:30pm`, `12am`/`12pm`
+//!   - `5-6pm`, `8am-5pm`, `5pm-7` (meridiem colors the bare side)
+//!   - `at 5` (bare 1..=7 leans PM — "at 5" means 17:00 to a human), `at 17`
+//!   - `noon`, `midnight` (with or without "at")
 //!   - `на 14`, `в 2` (at 14, at 2)
 //!   - `в 2 часа`, `в 14 часов`
 //!   - `9 вечера` (9 PM), `9 утра` (9 AM), `3 дня` (3 PM), `12 ночи` (12 AM)
@@ -207,6 +211,13 @@ fn extract_time(text: &mut String) -> (Option<i64>, Option<i64>) {
     // ── Pattern 0: Russian "с N до N" (from...to) ──
     if let Some(result) = try_extract_russian_from_to(text) {
         return result;
+    }
+
+    // ── Pattern 0.5: English "5pm" / "at 5" / "5-6pm" / noon / midnight ──
+    // Must run before the digital range/colon parsers: "5-6pm" would otherwise
+    // be eaten as 05:00-06:00 with a stray "pm" left in the title.
+    if let Some(result) = try_extract_english_time(text) {
+        return apply_default_duration_if_open(result);
     }
 
     // ── Pattern 1: HH:MM-HH:MM or HH.MM-HH.MM or HH-HH (time range) ──
@@ -674,6 +685,215 @@ fn try_extract_russian_at(text: &mut String) -> Option<(Option<i64>, Option<i64>
     None
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// English time forms: "5pm", "9 am", "5:30pm", "at 5", "5-6pm", noon/midnight
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum Meridiem { Am, Pm }
+
+impl Meridiem {
+    fn opposite(self) -> Self {
+        match self { Meridiem::Am => Meridiem::Pm, Meridiem::Pm => Meridiem::Am }
+    }
+}
+
+/// Parse "am"/"pm" at `pos` (optional leading spaces), case-insensitive.
+/// Returns (meridiem, bytes consumed incl. the spaces). Word boundary after —
+/// "5 among" must not read as 5am.
+fn try_parse_meridiem_at(bytes: &[u8], pos: usize) -> Option<(Meridiem, usize)> {
+    let len = bytes.len();
+    let mut p = pos;
+    while p < len && bytes[p] == b' ' { p += 1; }
+    if p + 2 > len { return None; }
+    let mer = match (bytes[p] | 32, bytes[p + 1] | 32) {
+        (b'a', b'm') => Meridiem::Am,
+        (b'p', b'm') => Meridiem::Pm,
+        _ => return None,
+    };
+    let after = p + 2;
+    if after < len && (bytes[after].is_ascii_alphanumeric() || bytes[after] == b'_') {
+        return None;
+    }
+    Some((mer, after - pos))
+}
+
+/// 12-hour minutes + meridiem → 24-hour minutes. Rejects hours outside 1-12.
+fn resolve_meridiem(mins: i64, mer: Meridiem) -> Option<i64> {
+    let (h, m) = (mins / 60, mins % 60);
+    if h == 0 || h > 12 { return None; }
+    let h24 = match mer {
+        Meridiem::Am => if h == 12 { 0 } else { h },
+        Meridiem::Pm => if h == 12 { 12 } else { h + 12 },
+    };
+    Some(h24 * 60 + m)
+}
+
+/// Like apply_default_duration, but leaves explicit ranges untouched.
+fn apply_default_duration_if_open(r: (Option<i64>, Option<i64>)) -> (Option<i64>, Option<i64>) {
+    match r {
+        (Some(s), None) => apply_default_duration((Some(s), None)),
+        other => other,
+    }
+}
+
+/// English pass, in order: time-with-meridiem (single or range) → "at N" → noon/midnight.
+fn try_extract_english_time(text: &mut String) -> Option<(Option<i64>, Option<i64>)> {
+    if let Some(r) = try_extract_meridiem_time(text) {
+        return Some(r);
+    }
+    if let Some(r) = try_extract_english_at(text) {
+        return Some(r);
+    }
+    try_extract_noon_midnight(text)
+}
+
+/// A time token being stripped drags a preceding "at " out with it —
+/// "gym at 6am" must not leave "gym at" behind.
+fn sweep_at_prefix(lower: &str, pos: usize) -> usize {
+    let head = &lower[..pos];
+    if head.ends_with("at ") {
+        let p = pos - 3;
+        if p == 0 || lower.as_bytes().get(p - 1).is_none_or(|b| b.is_ascii_whitespace()) {
+            return p;
+        }
+    }
+    pos
+}
+
+/// `H[:MM][am|pm]` alone or as `A-B` where at least one side carries am/pm.
+/// A meridiem on one side colors the other: "5-6pm" → 17:00–18:00, but
+/// "11-1pm" keeps 11:00 (the pm start would land past the end).
+fn try_extract_meridiem_time(text: &mut String) -> Option<(Option<i64>, Option<i64>)> {
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    let len = bytes.len();
+
+    for i in 0..len {
+        if !bytes[i].is_ascii_digit() { continue; }
+        if i > 0 && !bytes[i - 1].is_ascii_whitespace() { continue; }
+        let Some((t1, c1)) = try_parse_any_time_at(bytes, i) else { continue };
+        let after_t1 = i + c1;
+        let mer1 = try_parse_meridiem_at(bytes, after_t1);
+        let after_m1 = after_t1 + mer1.map_or(0, |(_, c)| c);
+
+        // ── Range: dash directly after the first token ──
+        if after_m1 < len && bytes[after_m1] == b'-' {
+            let t2_pos = after_m1 + 1;
+            if t2_pos < len && bytes[t2_pos].is_ascii_digit() {
+                if let Some((t2, c2)) = try_parse_any_time_at(bytes, t2_pos) {
+                    let after_t2 = t2_pos + c2;
+                    let mer2 = try_parse_meridiem_at(bytes, after_t2);
+                    let after_m2 = after_t2 + mer2.map_or(0, |(_, c)| c);
+                    if mer1.is_some() || mer2.is_some() {
+                        if let Some((s, e)) = resolve_meridiem_range(
+                            t1, mer1.map(|(m, _)| m), t2, mer2.map(|(m, _)| m)) {
+                            let from = sweep_at_prefix(&lower, i);
+                            text.replace_range(from..after_m2.min(text.len()), "");
+                            return Some((Some(s), Some(e)));
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Single token with meridiem ──
+        if let Some((m, _)) = mer1 {
+            if let Some(resolved) = resolve_meridiem(t1, m) {
+                let from = sweep_at_prefix(&lower, i);
+                text.replace_range(from..after_m1.min(text.len()), "");
+                return Some((Some(resolved), None));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve an A-B range where at least one side has a meridiem.
+fn resolve_meridiem_range(
+    t1: i64, mer1: Option<Meridiem>, t2: i64, mer2: Option<Meridiem>,
+) -> Option<(i64, i64)> {
+    match (mer1, mer2) {
+        (Some(m1), Some(m2)) => {
+            let s = resolve_meridiem(t1, m1)?;
+            let mut e = resolve_meridiem(t2, m2)?;
+            if e <= s { e += 1440; }
+            Some((s, e))
+        }
+        (None, Some(m2)) => {
+            // "5-6pm" / "11-1pm": end is fixed; start takes the same meridiem
+            // unless that would put it past the end — then it stays as typed.
+            let e = resolve_meridiem(t2, m2)?;
+            let s = match resolve_meridiem(t1, m2) {
+                Some(c) if c <= e => c,
+                _ if t1 <= e => t1,
+                _ => resolve_meridiem(t1, m2.opposite()).filter(|c| *c <= e)?,
+            };
+            Some((s, e))
+        }
+        (Some(m1), None) => {
+            // "5pm-7" / "11am-1": start is fixed; end tries the same meridiem,
+            // then the opposite, then as typed; last resort crosses midnight.
+            let s = resolve_meridiem(t1, m1)?;
+            let e = [resolve_meridiem(t2, m1), resolve_meridiem(t2, m1.opposite()), Some(t2)]
+                .into_iter()
+                .flatten()
+                .find(|c| *c > s)
+                .unwrap_or(t2 + 1440);
+            Some((s, e))
+        }
+        (None, None) => None,
+    }
+}
+
+/// `at H[:MM]` — 24h or 12h. A bare small hour leans afternoon (1..=7 → PM):
+/// "call at 5" means 17:00 to a human; 8..=23 stay literal. An explicit
+/// meridiem was already handled by try_extract_meridiem_time.
+fn try_extract_english_at(text: &mut String) -> Option<(Option<i64>, Option<i64>)> {
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    let prefix = "at ";
+    let mut search = 0usize;
+
+    while let Some(rel) = lower[search..].find(prefix) {
+        let pos = search + rel;
+        let before_ok = pos == 0
+            || bytes.get(pos - 1).is_none_or(|b| b.is_ascii_whitespace());
+        if !before_ok {
+            search = pos + prefix.len();
+            continue;
+        }
+        let t_pos = pos + prefix.len();
+        if let Some((t, c)) = try_parse_any_time_at(bytes, t_pos) {
+            let h = t / 60;
+            let resolved = if (1..=7).contains(&h) { t + 720 } else { t };
+            text.replace_range(pos..(t_pos + c).min(text.len()), "");
+            return Some((Some(resolved), None));
+        }
+        search = pos + prefix.len();
+    }
+    None
+}
+
+/// `noon` → 12:00, `midnight` → 00:00; a preceding "at " is swept with it.
+fn try_extract_noon_midnight(text: &mut String) -> Option<(Option<i64>, Option<i64>)> {
+    let lower = text.to_lowercase();
+    for (word, mins) in [("midnight", 0i64), ("noon", 720i64)] {
+        let Some(pos) = find_word(&lower, word) else { continue };
+        let mut start = pos;
+        let head = &lower[..pos];
+        if head.ends_with("at ") {
+            let p = pos - 3;
+            if p == 0 || lower.as_bytes().get(p - 1).is_none_or(|b| b.is_ascii_whitespace()) {
+                start = p;
+            }
+        }
+        text.replace_range(start..pos + word.len(), "");
+        return Some((Some(mins), None));
+    }
+    None
+}
+
 fn parse_russian_number_at_start(s: &str) -> Option<(u32, usize)> {
     // Digits
     let bytes = s.as_bytes();
@@ -972,6 +1192,8 @@ const WEEKDAYS: &[(&str, i64, bool)] = &[
     ("пн", 1, false), ("вт", 2, false), ("ср", 3, true), ("чт", 4, false),
     ("пт", 5, false), ("сб", 6, false), ("вс", 7, true),
     ("mon", 1, false), ("tue", 2, false), ("wed", 3, false), ("thu", 4, false), ("fri", 5, false),
+    // "sat"/"sun" are ordinary English words — they only count after "on".
+    ("sat", 6, true), ("sun", 7, true),
 ];
 
 fn try_extract_weekday(text: &mut String) -> Option<DateToken> {
@@ -1237,6 +1459,101 @@ mod tests {
         let r = parse_input("Встреча в 14 часов");
         assert_eq!(r.start_time, Some(840));
         assert_eq!(r.end_time, Some(900));
+    }
+
+    #[test]
+    fn test_english_pm_suffix() {
+        let r = parse_input("call mom 5pm");
+        assert_eq!(r.start_time, Some(17 * 60));
+        assert_eq!(r.end_time, Some(18 * 60));
+        assert_eq!(r.clean_title, "call mom");
+
+        let r2 = parse_input("standup 9 am");
+        assert_eq!(r2.start_time, Some(9 * 60));
+        assert_eq!(r2.clean_title, "standup");
+
+        let r3 = parse_input("focus 5:30pm");
+        assert_eq!(r3.start_time, Some(17 * 60 + 30));
+        assert_eq!(r3.clean_title, "focus");
+    }
+
+    #[test]
+    fn test_english_twelve_edge() {
+        assert_eq!(parse_input("flight 12am").start_time, Some(0));
+        assert_eq!(parse_input("lunch 12pm").start_time, Some(12 * 60));
+    }
+
+    #[test]
+    fn test_english_meridiem_word_boundaries() {
+        // "am"/"pm" glued into a word is not a time
+        let r = parse_input("read 5 among things");
+        assert_eq!(r.start_time, None);
+        assert_eq!(r.clean_title, "read 5 among things");
+        // digit inside a word is not an hour
+        let r2 = parse_input("note5pm");
+        assert_eq!(r2.start_time, None);
+    }
+
+    #[test]
+    fn test_english_at() {
+        // Bare small hours lean afternoon (1..=7 → PM) — nobody means 05:00
+        // by "at 5"; 8..=23 stay literal. Meridiem/24h always wins.
+        let r = parse_input("call mom at 5");
+        assert_eq!(r.start_time, Some(17 * 60));
+        assert_eq!(r.clean_title, "call mom");
+
+        assert_eq!(parse_input("wake at 8").start_time, Some(8 * 60));
+        assert_eq!(parse_input("review at 17").start_time, Some(17 * 60));
+        assert_eq!(parse_input("call at 5:30").start_time, Some(17 * 60 + 30));
+        let r6 = parse_input("gym at 6am");
+        assert_eq!(r6.start_time, Some(6 * 60));
+        assert_eq!(r6.clean_title, "gym"); // the "at" goes with its time
+        // "at" inside a word must not trigger
+        let r2 = parse_input("flat 5 keys");
+        assert_eq!(r2.start_time, None);
+        assert_eq!(r2.clean_title, "flat 5 keys");
+    }
+
+    #[test]
+    fn test_english_ranges_with_meridiem() {
+        // Trailing meridiem distributes: 5-6pm → 17:00–18:00
+        let r = parse_input("deep work 5-6pm");
+        assert_eq!(r.start_time, Some(17 * 60));
+        assert_eq!(r.end_time, Some(18 * 60));
+        assert_eq!(r.clean_title, "deep work");
+        // Crossing noon: 11-1pm → 11:00–13:00
+        let r2 = parse_input("brunch 11-1pm");
+        assert_eq!(r2.start_time, Some(11 * 60));
+        assert_eq!(r2.end_time, Some(13 * 60));
+        // Both sides explicit: 8am-5pm
+        let r3 = parse_input("shift 8am-5pm");
+        assert_eq!(r3.start_time, Some(8 * 60));
+        assert_eq!(r3.end_time, Some(17 * 60));
+        // Leading meridiem, bare end: 5pm-7 → 17:00–19:00
+        let r4 = parse_input("jam 5pm-7");
+        assert_eq!(r4.start_time, Some(17 * 60));
+        assert_eq!(r4.end_time, Some(19 * 60));
+    }
+
+    #[test]
+    fn test_noon_midnight() {
+        let r = parse_input("lunch at noon");
+        assert_eq!(r.start_time, Some(12 * 60));
+        assert_eq!(r.clean_title, "lunch");
+        let r2 = parse_input("release midnight");
+        assert_eq!(r2.start_time, Some(0));
+        assert_eq!(r2.clean_title, "release");
+    }
+
+    #[test]
+    fn test_weekday_en_sat_sun_need_prefix() {
+        // "sat"/"sun" are ordinary English words — only "on sat"/"on sun" count.
+        assert_eq!(parse_input("hike on sat").date, Some(DateToken::Weekday(6)));
+        assert_eq!(parse_input("call dad on sun").date, Some(DateToken::Weekday(7)));
+        assert_eq!(parse_input("sat with mom").date, None);
+        assert_eq!(parse_input("sun was out").date, None);
+        assert_eq!(parse_input("saturday market").date, Some(DateToken::Weekday(6)));
+        assert_eq!(parse_input("sunday reset").date, Some(DateToken::Weekday(7)));
     }
     
     #[test]

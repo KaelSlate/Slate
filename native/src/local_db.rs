@@ -13,8 +13,38 @@ use rusqlite::{Connection, params, OptionalExtension};
 use std::sync::Mutex;
 use std::path::Path;
 
+/// Why the vault refused to open — Dart shows a different recovery path for
+/// each: a lost DPAPI key is not a locked file is not a corrupt schema.
+#[derive(Debug)]
+pub enum DbOpenError {
+    /// The file itself didn't open (locked, path is a dir, permissions).
+    Io(String),
+    /// The file opened but the key doesn't unlock it (DPAPI key lost/changed).
+    Key(String),
+    /// Everything else (rekey/pragma/schema failures).
+    Other(String),
+}
+
+impl DbOpenError {
+    /// FFI return code for init_engine: -1 io, -2 key, -3 other.
+    pub fn code(&self) -> i32 {
+        match self {
+            DbOpenError::Io(_) => -1,
+            DbOpenError::Key(_) => -2,
+            DbOpenError::Other(_) => -3,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            DbOpenError::Io(m) | DbOpenError::Key(m) | DbOpenError::Other(m) => m,
+        }
+    }
+}
+
 /// Thread-safe SQLite connection wrapper.
 /// All access is serialized through the Mutex.
+#[derive(Debug)]
 pub struct LocalDb {
     conn: Mutex<Connection>,
 }
@@ -22,7 +52,7 @@ pub struct LocalDb {
 impl LocalDb {
     /// Open (or create) the SQLite database at the given path.
     /// Creates tables if they don't exist.
-    pub fn open(db_path: &str, db_key: &str) -> Result<Self, String> {
+    pub fn open(db_path: &str, db_key: &str) -> Result<Self, DbOpenError> {
         let is_memory = db_path == ":memory:";
         if !is_memory {
             // Ensure parent directory exists
@@ -30,9 +60,9 @@ impl LocalDb {
                 let _ = std::fs::create_dir_all(parent);
             }
         }
-        let open_raw = || -> Result<Connection, String> {
+        let open_raw = || -> Result<Connection, DbOpenError> {
             let c = if is_memory { Connection::open_in_memory() } else { Connection::open(db_path) };
-            c.map_err(|e| format!("SQLite open failed: {}", e))
+            c.map_err(|e| DbOpenError::Io(format!("SQLite open failed: {}", e)))
         };
 
         // ── SQLCipher key ───────────────────────────────────────────────────────
@@ -50,7 +80,7 @@ impl LocalDb {
         } else {
             let c = open_raw()?;
             c.execute_batch(&format!("PRAGMA key = \"x'{}'\";\nPRAGMA cipher_page_size = 4096;", db_key))
-                .map_err(|e| format!("SQLCipher raw key failed: {}", e))?;
+                .map_err(|e| DbOpenError::Other(format!("SQLCipher raw key failed: {}", e)))?;
             let raw_ok = c
                 .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
                 .is_ok();
@@ -67,21 +97,21 @@ impl LocalDb {
                 }
                 let m = open_raw()?;
                 m.execute_batch(&format!("PRAGMA key = '{}';\nPRAGMA cipher_page_size = 4096;", db_key))
-                    .map_err(|e| format!("SQLCipher legacy key failed: {}", e))?;
+                    .map_err(|e| DbOpenError::Other(format!("SQLCipher legacy key failed: {}", e)))?;
                 m.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
-                    .map_err(|e| format!("SQLCipher unlock failed (bad key / corrupt DB): {}", e))?;
+                    .map_err(|e| DbOpenError::Key(format!("SQLCipher unlock failed (bad key / corrupt DB): {}", e)))?;
                 m.execute_batch(&format!("PRAGMA rekey = \"x'{}'\";", db_key))
-                    .map_err(|e| format!("SQLCipher rekey→raw failed: {}", e))?;
+                    .map_err(|e| DbOpenError::Other(format!("SQLCipher rekey→raw failed: {}", e)))?;
                 m
             }
         };
 
         // WAL mode for concurrent reads during sync
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
-            .map_err(|e| format!("SQLite PRAGMA failed: {}", e))?;
+            .map_err(|e| DbOpenError::Other(format!("SQLite PRAGMA failed: {}", e)))?;
 
         // Create tables
-        conn.execute_batch(
+        let schema = conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -111,7 +141,8 @@ impl LocalDb {
             CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
             CREATE INDEX IF NOT EXISTS idx_tasks_deleted ON tasks(is_deleted);
             CREATE INDEX IF NOT EXISTS idx_sync_queue_created ON sync_queue(created_at);"
-        ).map_err(|e| format!("SQLite schema creation failed: {}", e))?;
+        );
+        schema.map_err(|e| DbOpenError::Other(format!("SQLite schema creation failed: {}", e)))?;
 
         // Fix 5: .unwrap_or(0) instead of .unwrap()
         let user_version: i32 = conn
@@ -463,5 +494,41 @@ impl LocalDb {
         ) {
             crate::dlog!("[db] set_meta failed for key '{}': {}", key, e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("slate_dbtest_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).expect("temp dir");
+        d
+    }
+
+    #[test]
+    fn wrong_key_classifies_as_key_error() {
+        let dir = temp_dir();
+        let path = dir.join("t.db");
+        let path = path.to_str().expect("utf8 path");
+        let key_a = "aa".repeat(32);
+        let key_b = "bb".repeat(32);
+        {
+            let db = LocalDb::open(path, &key_a).expect("create with key A");
+            db.set_meta("probe", "1");
+        }
+        let err = LocalDb::open(path, &key_b).expect_err("key B must not open it");
+        assert!(matches!(err, DbOpenError::Key(_)), "got: {:?}", err);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unopenable_path_classifies_as_io_error() {
+        let dir = temp_dir(); // a DIRECTORY as the db path → io failure
+        let err = LocalDb::open(dir.to_str().expect("utf8"), &"aa".repeat(32))
+            .expect_err("a directory is not a database");
+        assert!(matches!(err, DbOpenError::Io(_)), "got: {:?}", err);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

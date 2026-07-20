@@ -6,6 +6,12 @@ unique to this build's newest feature), the running process path, and the HKCU R
 registry value. An unrecorded deploy caused a full bug round (round 8: user tested
 a 3-day-stale binary).
 
+Law (public builds, added 2026-07-20): any build that leaves this machine is made
+with `flutter build windows --release --obfuscate --split-debug-info=symbols\v<ver>`
+and the `symbols\v<ver>` folder is KEPT (git-ignored, never deleted) — without it
+tester crash logs are unreadable. The Rust DLL is already stripped (`strip=true`).
+Local/dev deploys may skip obfuscation; the DEPLOYS line must then say so.
+
 | Version | Date | Commit | Folder | Marker verified |
 |---------|------|--------|--------|-----------------|
 | 1.0.0 | 2026-07-09 | pre-git | Releases\slate_v1.0.0 | — |

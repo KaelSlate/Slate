@@ -41,6 +41,11 @@ class QuickCaptureController {
   /// Human-readable registered chord — tray menu/tooltip/hints show it.
   String hotkeyLabel = 'Alt+Space';
 
+  /// False when every chord in the chain was taken: the welcome overlay and
+  /// the tray then stop advertising a chord that does nothing — the one lie
+  /// this label used to tell.
+  bool hotkeyActive = true;
+
   /// Hosts of an IN-APP capture input (the shell's overview pill, the day
   /// view's own) register a closer here. The chord shuts them all before it
   /// raises the window pill — one capture instance at a time, always.
@@ -74,9 +79,11 @@ class QuickCaptureController {
         keyDownHandler: (_) => _summon(),
       );
       hotkeyLabel = c.label;
+      hotkeyActive = true;
       debugPrint('quick capture: registered ${c.label}');
       return;
     }
+    hotkeyActive = false;
     debugPrint('quick capture: no free chord — hotkey disabled');
   }
 

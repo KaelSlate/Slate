@@ -201,6 +201,19 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     }
   }
 
+  // Logoff/shutdown: Windows kills the process right after WM_ENDSESSION
+  // returns — Dart's quit path never runs. Flush the Rust vault directly
+  // (drain write queue + WAL checkpoint); ffi_shutdown_engine is idempotent.
+  if (message == WM_ENDSESSION && wparam) {
+    if (HMODULE core = ::GetModuleHandleW(L"slate_core.dll")) {
+      if (auto shutdown = reinterpret_cast<int (*)()>(
+              ::GetProcAddress(core, "ffi_shutdown_engine"))) {
+        shutdown();
+      }
+    }
+    return 0;
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

@@ -378,7 +378,10 @@ fn install_panic_hook(db_path: &str) {
 /// 2. Loads all tasks from SQLite into in-memory TaskStore
 /// 3. Spawns background db-writer + sync worker threads
 ///
-/// Returns the number of tasks loaded from local DB.
+/// Returns the number of tasks loaded from local DB, or a typed failure:
+/// -1 the file didn't open (locked / io), -2 the key doesn't unlock it
+/// (DPAPI key lost), -3 anything else. Dart shows a different recovery
+/// path per code — a silent fallback here once masqueraded as data loss.
 #[flutter_rust_bridge::frb(sync)]
 pub fn init_engine(db_path: String, supabase_url: String, supabase_key: String, db_key: String) -> i32 {
     install_panic_hook(&db_path);
@@ -387,8 +390,8 @@ pub fn init_engine(db_path: String, supabase_url: String, supabase_key: String, 
     let db = match LocalDb::open(&db_path, &db_key) {
         Ok(db) => Arc::new(db),
         Err(e) => {
-            crate::dlog!("[engine] SQLite open failed: {}", e);
-            return -1;
+            crate::dlog!("[engine] SQLite open failed: {}", e.message());
+            return e.code();
         }
     };
 

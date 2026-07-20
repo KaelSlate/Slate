@@ -40,6 +40,22 @@ void main() {
     await tester.pumpWidget(const SizedBox()); // dispose cleanly
   });
 
+  testWidgets('all chords taken → teaches C instead of a dead hotkey',
+      (tester) async {
+    QuickCaptureController.instance.hotkeyActive = false;
+    addTearDown(() => QuickCaptureController.instance.hotkeyActive = true);
+
+    await tester.pumpWidget(host(onGone: () {}));
+    await tester.pump(const Duration(milliseconds: 2500));
+
+    expect(find.textContaining('held by another app'), findsOneWidget);
+    expect(find.text('C'), findsOneWidget, reason: 'the working key, as a cap');
+    expect(find.textContaining('anywhere, anytime'), findsNothing);
+    expect(find.textContaining('capture works all the same'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('first capture flips to the confirm moment, then auto-dissolves',
       (tester) async {
     var gone = false;

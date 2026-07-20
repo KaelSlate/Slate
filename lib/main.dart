@@ -6,11 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, FontLoader;
 import 'package:flutter_acrylic/flutter_acrylic.dart' show Window;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'core/engine/quick_capture_controller.dart';
 import 'core/engine/spatial_zoom_engine.dart';
 import 'core/engine/tray_shell.dart';
+import 'core/state/app_dirs.dart';
 import 'core/state/crash_log.dart';
 import 'core/state/first_run.dart';
 import 'core/state/lesson_state.dart';
@@ -72,8 +72,10 @@ Future<void> _boot(List<String> args) async {
     FlutterError.presentError(details);
   };
   // Resolve the log dir concurrently; earlier records are buffered.
-  unawaited(getApplicationDocumentsDirectory().then(
-    (d) => CrashLog.init(Directory('${d.path}\\slate_data\\logs')),
+  // AppDirs also runs the one-time move out of Documents/OneDrive here,
+  // before anything opens the DB.
+  unawaited(AppDirs.dataDir().then(
+    (d) => CrashLog.init(Directory('${d.path}\\logs')),
   ));
 
   // Kick off everything independent AT ONCE instead of serializing await-by-await:

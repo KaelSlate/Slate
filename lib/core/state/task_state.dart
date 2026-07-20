@@ -1,17 +1,32 @@
-import 'dart:io' show Platform;
+import 'dart:async' show unawaited;
+import 'dart:io' show Directory, File, Platform;
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../engine/capture_destination.dart';
 import '../engine/slate_core_bridge.dart';
 import '../interaction/delete_settle.dart';
+import 'app_dirs.dart';
+import 'backup_service.dart';
+import 'export_service.dart';
 import 'first_run.dart';
 import 'local_prefs.dart';
+import 'pending_captures.dart';
 import 'toast_bus.dart';
 
 final taskStateProvider = ChangeNotifierProvider<TaskState>((ref) => TaskState());
+
+/// Why the vault didn't open — mirrors init_engine's typed codes
+/// (-1 io, -2 key, -3 other). Each kind gets its own recovery copy in
+/// VaultGate: a lost DPAPI key is not a locked file.
+enum EngineFailKind { io, key, other }
+
+class EngineFailure {
+  final EngineFailKind kind;
+  final String dbPath;
+  const EngineFailure(this.kind, this.dbPath);
+}
 
 /// Phase 3 — Zero-Latency Offline Task State
 ///
@@ -108,6 +123,12 @@ class TaskState extends ChangeNotifier {
     _initEngine();
   }
 
+  /// Set while the vault refused to open. VaultGate (pulse_layer) listens;
+  /// mutations are guarded and captures spill to pending_captures.jsonl.
+  final ValueNotifier<EngineFailure?> engineFailure = ValueNotifier(null);
+
+  bool get _vaultDown => engineFailure.value != null;
+
   /// Initialize the Rust offline engine.
   /// Rust loads tasks from local SQLite (<50ms), then spawns sync worker.
   Future<void> _initEngine() async {
@@ -126,24 +147,92 @@ class TaskState extends ChangeNotifier {
     );
 
     if (count >= 0) {
+      engineFailure.value = null;
       // Hydrate Dart's local mirror from Rust store
       _tasks = core.getAllTasks();
       // Not under `flutter test`: the 19+ existing tests build their own
       // fixtures and must never find demo tasks in frame.
       if (!Platform.environment.containsKey('FLUTTER_TEST')) {
         await maybeSeedDemo();
+        await _drainPendingCaptures();
+        unawaited(writeSafetyBackup());
       }
       _loaded = true;
       debugPrint('✓ TaskState: Engine ready with $count tasks from local DB');
     } else {
-      // Engine init failed — fall back to stub tasks
-      debugPrint('⚠ TaskState: Engine init failed, using stub data');
-      _tasks = List.generate(5, (i) =>
-        core.createTask('Sample task ${i + 1}', DateTime.now().millisecondsSinceEpoch));
+      // The vault did not open. NEVER paper over it with sample tasks — that
+      // reads as data loss, and anything typed afterwards would write into
+      // the void. VaultGate takes the screen; captures spill to a file.
+      final kind = switch (count) {
+        -2 => EngineFailKind.key,
+        -1 => EngineFailKind.io,
+        _ => EngineFailKind.other,
+      };
+      _tasks = [];
       _loaded = true;
+      engineFailure.value = EngineFailure(kind, dbPath);
+      debugPrint('⚠ TaskState: vault did not open (code $count) at $dbPath');
     }
 
+    _bumpTick();
     notifyListeners();
+  }
+
+  /// VaultGate: try opening again — a lock may have been released.
+  Future<void> retryEngine() async {
+    if (!_vaultDown) return;
+    engineFailure.value = null;
+    await _initEngine();
+  }
+
+  /// VaultGate: step aside. The unopenable file is renamed next to a brand-new
+  /// vault — kept, never deleted. tasks.db → tasks.db.unopened-<stamp>.bak.
+  Future<void> startFreshVault() async {
+    if (!_vaultDown) return;
+    final dbPath = await _resolveDbPath();
+    final stamp = DateTime.now()
+        .toIso8601String()
+        .split('.')
+        .first
+        .replaceAll(':', '-');
+    for (final suffix in ['', '-wal', '-shm']) {
+      final f = File('$dbPath$suffix');
+      try {
+        if (await f.exists()) {
+          await f.rename('$dbPath.unopened-$stamp$suffix.bak');
+        }
+      } catch (_) {/* a stuck sidecar must not stop the fresh start */}
+    }
+    engineFailure.value = null;
+    await _initEngine();
+  }
+
+  /// Captures spilled while the vault was down flow into the Inbox now.
+  Future<void> _drainPendingCaptures() async {
+    final pending = await PendingCaptures.drain();
+    if (pending.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final p in pending) {
+      var t = core.createInboxTask(p.title, now);
+      if (p.priority != 0 || p.tags.isNotEmpty) {
+        t = t.copyWith(priority: p.priority, tags: p.tags);
+        core.updateTaskInStore(t);
+      }
+    }
+    _tasks = core.getAllTasks();
+  }
+
+  /// The silent daily backup (plain JSON next to the DB) — and, with
+  /// [refresh], the quit hook that rewrites today's file with the freshest
+  /// state. Empty stores are never written: a failed morning must not
+  /// shadow last week's good backups.
+  Future<void> writeSafetyBackup({bool refresh = false}) async {
+    if (_vaultDown || _tasks.isEmpty) return;
+    try {
+      final dir = Directory('${(await AppDirs.dataDir()).path}\\backups');
+      await maybeWriteDailyBackup(buildExportJson(core.getAllTasks()), dir,
+          refresh: refresh);
+    } catch (_) {/* the net must never become the accident */}
   }
 
   /// First-launch sample week — real engine tasks (FFI), deletable, editable and
@@ -217,11 +306,11 @@ class TaskState extends ChangeNotifier {
     refreshFromStore();
   }
 
-  /// Resolve the SQLite database file path.
+  /// Resolve the SQLite database file path (AppDirs owns the folder choice
+  /// and the one-time migration out of Documents/OneDrive).
   Future<String> _resolveDbPath() async {
-    // Use the OS-compliant documents directory for mobile/desktop
-    final appDir = await getApplicationDocumentsDirectory();
-    return '${appDir.path}/slate_data/tasks.db';
+    final dir = await AppDirs.dataDir();
+    return '${dir.path}\\tasks.db';
   }
 
   /// Retrieve or cryptographically generate the SQLite payload encryption key.
@@ -240,6 +329,7 @@ class TaskState extends ChangeNotifier {
   /// Create a new task. Rust persists to SQLite + queues sync instantly.
   Future<void> createTask(String title, int targetTs) async {
     if (title.trim().isEmpty) return;
+    if (_vaultDown) return PendingCaptures.append(title.trim());
     final newTask = core.createTask(title.trim(), targetTs);
     _tasks.insert(0, newTask);
     _invalidateTaskCaches(newTask);
@@ -261,6 +351,10 @@ class TaskState extends ChangeNotifier {
   Future<void> createInboxTask(String title,
       {int priority = 0, List<String> tags = const []}) async {
     if (title.trim().isEmpty) return;
+    if (_vaultDown) {
+      return PendingCaptures.append(title.trim(),
+          tags: tags, priority: priority);
+    }
     final now = DateTime.now().millisecondsSinceEpoch;
     var newTask = core.createInboxTask(title.trim(), now);
     if (priority != 0 || tags.isNotEmpty) {
@@ -282,6 +376,10 @@ class TaskState extends ChangeNotifier {
     required ParseResult result,
   }) async {
     if (cleanTitle.trim().isEmpty) return;
+    if (_vaultDown) {
+      return PendingCaptures.append(cleanTitle.trim(),
+          tags: result.tags, priority: result.priority);
+    }
     final newTask = core.createTaskEx(
       title: cleanTitle.trim(),
       dayTs: dayTs,
@@ -301,6 +399,12 @@ class TaskState extends ChangeNotifier {
   Future<void> createCaptured(
       String cleanTitle, ParseResult result, CaptureDestination dest) async {
     if (cleanTitle.trim().isEmpty) return;
+    // Vault down: the thought is kept whole (title+tags+priority) and files
+    // itself into the Inbox on the next good start. Never into the void.
+    if (_vaultDown) {
+      return PendingCaptures.append(cleanTitle.trim(),
+          tags: result.tags, priority: result.priority);
+    }
     if (dest.toInbox) {
       return createInboxTask(cleanTitle,
           priority: result.priority, tags: result.tags);
@@ -322,6 +426,7 @@ class TaskState extends ChangeNotifier {
 
   /// Update an existing task.
   void updateTask(RustTask task) {
+    if (_vaultDown) return;
     // Capture the PREVIOUS version before overwriting: if the edit moved the
     // task to another day (or hour), the old day's notifier must also refresh —
     // otherwise the task keeps showing on the old day until restart.
@@ -378,6 +483,7 @@ class TaskState extends ChangeNotifier {
 
   /// Toggle task completion. Rust persists + queues sync.
   void toggleTask(RustTask task) {
+    if (_vaultDown) return;
     final toggled = core.toggleTask(task);
     final idx = _tasks.indexWhere((t) => t.id == task.id);
     if (idx != -1) _tasks[idx] = toggled;
@@ -391,6 +497,7 @@ class TaskState extends ChangeNotifier {
   /// Delete a task. Rust soft-deletes in SQLite + queues sync.
   /// The full snapshot goes on the undo stack — Ctrl+Z rebuilds every field.
   void deleteTask(RustTask task) {
+    if (_vaultDown) return;
     _tasks.removeWhere((t) => t.id == task.id);
     final dayIndex = core.removeTaskFromStore(task.id);
     DeleteSettle.stamp(); // toggle taps pause while rows glide up
@@ -423,6 +530,7 @@ class TaskState extends ChangeNotifier {
   /// Undo the most recent toggle/delete. Returns a short human description
   /// of what came back, or null if there was nothing (or nothing valid) left.
   String? undoLast() {
+    if (_vaultDown) return null;
     _undoing = true;
     try {
       while (_undoStack.isNotEmpty) {

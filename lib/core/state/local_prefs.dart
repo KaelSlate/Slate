@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:path_provider/path_provider.dart';
+
+import 'app_dirs.dart';
 
 /// Plain-file app preferences — NON-secrets only.
 ///
@@ -30,26 +32,36 @@ class LocalPrefs {
   static Future<LocalPrefs>? _loading;
   static Future<LocalPrefs> load() => _loading ??= _doLoad();
 
+  /// Tests re-run load() against a fresh AppDirs.testOverride.
+  @visibleForTesting
+  static void debugReset() => _loading = null;
+
   static Future<LocalPrefs> _doLoad() async {
-    final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/slate_data/prefs.json');
+    final dir = await AppDirs.dataDir();
+    final file = File('${dir.path}\\prefs.json');
     Map<String, dynamic> data = {};
     try {
       if (await file.exists()) {
         data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
       } else {
-        // One-time migration from secure storage, where these never belonged.
-        const storage = FlutterSecureStorage();
-        final values = await Future.wait([
-          storage.read(key: _kViewPref),
-          storage.read(key: _kOnboarded),
-          storage.read(key: _kWelcomed),
-        ]);
-        data = {
-          if (values[0] != null) _kViewPref: values[0],
-          if (values[1] != null) _kOnboarded: values[1],
-          if (values[2] != null) _kWelcomed: values[2],
-        };
+        final tmp = File('${file.path}.tmp');
+        if (await tmp.exists()) {
+          // A crash between tmp-write and swap — the tmp IS the latest state.
+          data = jsonDecode(await tmp.readAsString()) as Map<String, dynamic>;
+        } else {
+          // One-time migration from secure storage, where these never belonged.
+          const storage = FlutterSecureStorage();
+          final values = await Future.wait([
+            storage.read(key: _kViewPref),
+            storage.read(key: _kOnboarded),
+            storage.read(key: _kWelcomed),
+          ]);
+          data = {
+            if (values[0] != null) _kViewPref: values[0],
+            if (values[1] != null) _kOnboarded: values[1],
+            if (values[2] != null) _kWelcomed: values[2],
+          };
+        }
       }
     } catch (_) {
       data = {}; // corrupt/unreadable prefs → sane defaults, never crash startup
@@ -124,13 +136,27 @@ class LocalPrefs {
     _persist();
   }
 
-  /// Fire-and-forget write — three tiny keys, never blocks the UI.
+  /// Serialized atomic swap: tmp-write → rename. A crash mid-write leaves
+  /// either the valid old file or a valid tmp (recovered on load) — never a
+  /// torn JSON. Writes chain so two setters can't interleave on disk.
+  Future<void> _writes = Future.value();
   void _persist() {
-    Future(() async {
+    _writes = _writes.then((_) async {
       try {
         await _file.parent.create(recursive: true);
-        await _file.writeAsString(jsonEncode(_data));
+        final tmp = File('${_file.path}.tmp');
+        await tmp.writeAsString(jsonEncode(_data), flush: true);
+        try {
+          await tmp.rename(_file.path);
+        } on FileSystemException {
+          // Windows may refuse a rename onto an existing file.
+          await _file.delete();
+          await tmp.rename(_file.path);
+        }
       } catch (_) {/* non-fatal: prefs are re-derivable */}
     });
   }
+
+  @visibleForTesting
+  Future<void> debugFlush() => _writes;
 }
