@@ -2506,11 +2506,13 @@ class _TaskBlockState extends State<_TaskBlock> {
   double _titleW = 0;
   double _timeW = 0;
 
+  // ONE weight for every task — same rule the week/month cards already follow
+  // (see HoverTaskCard). Priority speaks through the honey accent and the wider
+  // accent bar; bolding the title too made `!!` shout in a timeline that should
+  // read as one calm voice.
   static TextStyle titleStyleFor(RustTask t) => AppFonts.inter(
         fontSize: 12.5,
-        fontWeight: t.isCompleted
-            ? FontWeight.w400
-            : (t.priority == 2 ? FontWeight.w600 : FontWeight.w500),
+        fontWeight: t.isCompleted ? FontWeight.w400 : FontWeight.w500,
         letterSpacing: 0.05,
       );
 

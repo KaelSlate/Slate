@@ -2,6 +2,9 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include <functional>
+#include <memory>
+
 #include "flutter_window.h"
 #include "pill_window.h"
 #include "utils.h"
@@ -69,21 +72,45 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // borderless + topmost + no taskbar/alt-tab entry. Created at the primary
   // work-area size so showing it never RESIZES (a resize on a just-shown window
   // is the cold-swapchain trap) — ShowPill only repositions. Lives for the whole
-  // process, shown on the hotkey. SPIKE (phase 2): shown once here to verify the
-  // transparent scene; hotkey-driven show/hide is wired next.
-  RECT wa = {0, 0, 1366, 768};
-  ::SystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0);
+  // process, shown on the hotkey.
+  //
+  // Built AFTER the main window's first frame, not alongside it: booting a
+  // SECOND Flutter engine here was competing with the first engine for CPU and
+  // GPU during the exact stretch the user is staring at an empty window. The
+  // hotkey can't fire before the app is drawn anyway.
+  std::unique_ptr<PillWindow> pill_window;
   flutter::DartProject pill_project(L"data");
   pill_project.set_dart_entrypoint_arguments({"--pill"});
-  PillWindow pill_window(pill_project);
-  Win32Window::Point pill_origin(wa.left, wa.top);
-  Win32Window::Size pill_size(wa.right - wa.left, wa.bottom - wa.top);
-  pill_window.Create(L"SlatePill", pill_origin, pill_size, WS_POPUP,
-                     WS_EX_TOPMOST | WS_EX_TOOLWINDOW);
-  // Hotkey (main isolate) -> raise the pill; pill submit -> main isolate creates.
-  window.SetShowPillCallback([&pill_window]() { pill_window.ShowPill(); });
-  pill_window.SetCaptureSink(
-      [&window](const flutter::EncodableValue& v) { window.SendCapture(v); });
+
+  auto build_pill = [&]() {
+    if (pill_window) return;
+    RECT wa = {0, 0, 1366, 768};
+    ::SystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0);
+    pill_window = std::make_unique<PillWindow>(pill_project);
+    Win32Window::Point pill_origin(wa.left, wa.top);
+    Win32Window::Size pill_size(wa.right - wa.left, wa.bottom - wa.top);
+    pill_window->Create(L"SlatePill", pill_origin, pill_size, WS_POPUP,
+                        WS_EX_TOPMOST | WS_EX_TOOLWINDOW);
+    // Pill submit -> main isolate creates the task (one engine, one DB).
+    pill_window->SetCaptureSink(
+        [&window](const flutter::EncodableValue& v) { window.SendCapture(v); });
+  };
+
+  if (start_hidden) {
+    // Autostart: no window is ever shown, so there is no first frame to stay
+    // out of the way of — and the hotkey is the ONLY reason this process
+    // exists. Build the pill now; deferring it here would risk never building
+    // it at all.
+    build_pill();
+  } else {
+    window.SetFirstFrameCallback(build_pill);
+  }
+
+  // Wired up front: a hotkey that somehow beats the first frame is a no-op
+  // rather than a crash.
+  window.SetShowPillCallback([&pill_window]() {
+    if (pill_window) pill_window->ShowPill();
+  });
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {

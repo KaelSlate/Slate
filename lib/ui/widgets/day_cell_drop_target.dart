@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/interaction/drag_session.dart';
@@ -20,7 +21,13 @@ class DayCellDropTarget extends StatefulWidget {
   /// Builds the cell content. The passed key is attached to the cell's
   /// timed/untimed divider (kept for the list's own layout; the drop no longer
   /// measures anything from it).
-  final Widget Function(GlobalKey dividerKey) builder;
+  ///
+  /// [railInset] is how far the cell's TASK LIST — and nothing else — should
+  /// step down so the rail lands in cleared space instead of on top of the first
+  /// card. Translate it, never pad it: a paint-only offset costs no re-layout,
+  /// so the column's capacity, its header and the hover frame all stay put.
+  final Widget Function(GlobalKey dividerKey, ValueListenable<double> railInset)
+      builder;
 
   /// Approximate slot the preview settles into, inside the cell.
   final double settleTopOffset;
@@ -54,6 +61,14 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   /// Owned here so it stays stable across cell rebuilds.
   final GlobalKey _dividerKey = GlobalKey();
 
+  /// Gap the task list opens for the rail. Driven by the SAME hover the rail
+  /// itself reads, so the two can never disagree about whether there is a rail.
+  final ValueNotifier<double> _railInset = ValueNotifier<double>(0);
+
+  /// Breathing room between the rail and the first card once the list steps
+  /// aside — without it the card sits against the rail's shadow.
+  static const double _railGap = 6;
+
   @override
   String get id => 'cell#${identityHashCode(this)}';
 
@@ -67,8 +82,18 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   void initState() {
     super.initState();
     DragSession.instance.registry.register(this);
+    DragSession.instance.hover.addListener(_syncRailInset);
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _publishCardWidth());
+  }
+
+  /// Listener, not a build-phase read: the inset must settle BEFORE the frame
+  /// that paints the rail, and a notifier may not be written during build.
+  void _syncRailInset() {
+    final target = _railShowing(DragSession.instance.hover.value)
+        ? widget.railHeight + _railGap
+        : 0.0;
+    _railInset.value = target;
   }
 
   @override
@@ -81,7 +106,17 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   @override
   void dispose() {
     DragSession.instance.registry.unregister(this);
+    DragSession.instance.hover.removeListener(_syncRailInset);
+    _railInset.dispose();
     super.dispose();
+  }
+
+  /// True when the rail is on screen for THIS cell — the one condition that
+  /// makes the list step aside. Mirrors AnytimeRail's own `visible`.
+  bool _railShowing(DropHover? h) {
+    if (h?.zoneId != id) return false;
+    final mode = h?.cellMode;
+    return mode != null && mode != 'whole';
   }
 
   static bool _sameDay(DateTime a, DateTime b) =>
@@ -176,7 +211,7 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     // First-frame estimate only — the refine-to-card path corrects it to the
     // real row as soon as the list has laid the new card out.
     final head = r.top + widget.settleTopOffset;
-    final top = (mode == 'keep' ? head : head + widget.railHeight + 6)
+    final top = (mode == 'keep' ? head : head + widget.railHeight + _railGap)
         .clamp(r.top, r.bottom - widget.settleHeight);
     return DropResult(
       settleGlobalRect:
@@ -189,7 +224,7 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return Stack(
       fit: StackFit.passthrough,
       children: [
-        widget.builder(_dividerKey),
+        widget.builder(_dividerKey, _railInset),
         // A soft honey frame on the WHOLE cell when it is the drop target — the
         // day says "I'm receiving this". Where inside it the card lands, and
         // whether it keeps its time, is shown by the haloed card itself (see

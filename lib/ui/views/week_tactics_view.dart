@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -502,8 +503,9 @@ class WeekTacticsViewState extends State<WeekTacticsView> {
                       const EdgeInsets.symmetric(horizontal: 1, vertical: 6),
                   highlightRadius:
                       BorderRadius.circular(AppTheme.radiusXLarge),
-                  builder: (dividerKey) => _DayColumn(
+                  builder: (dividerKey, railInset) => _DayColumn(
                   dividerKey: dividerKey,
+                  railInset: railInset,
                   cell: e.value,
                   index: e.key,
                   core: widget.core,
@@ -551,6 +553,9 @@ class _DayColumn extends StatefulWidget {
   final ValueChanged<DateTime>? onDayAdd;
   /// Attached to the timed/untimed divider — the drop wash splits on it.
   final GlobalKey dividerKey;
+  /// How far the task list steps aside for the "Anytime" rail. See
+  /// DayCellDropTarget.builder.
+  final ValueListenable<double> railInset;
 
   const _DayColumn({
     required this.cell,
@@ -560,6 +565,7 @@ class _DayColumn extends StatefulWidget {
     required this.onToggleTask,
     required this.onDeleteTask,
     required this.dividerKey,
+    required this.railInset,
     this.animateEntrance = false,
     this.taskState,
     this.onHover,
@@ -711,7 +717,25 @@ class _DayColumnState extends State<_DayColumn> {
                       color: Colors.white.withOpacity(widget.cell.isToday ? 0.08 : 0.04),
                     ),
                     Expanded(
-                      child: _buildTaskList(context, dayTasks),
+                      // The list steps aside for the "Anytime" rail — and only
+                      // it: the head above and the hover frame around stay put.
+                      // Translate, not padding, so nothing re-lays out (the
+                      // column's capacity math must not see a shorter list) and
+                      // neighbouring columns cannot twitch.
+                      child: ValueListenableBuilder<double>(
+                        valueListenable: widget.railInset,
+                        builder: (_, inset, child) => TweenAnimationBuilder<double>(
+                          tween: Tween<double>(end: inset),
+                          duration: const Duration(milliseconds: 180),
+                          curve: Curves.easeOutCubic,
+                          builder: (_, v, c) => Transform.translate(
+                            offset: Offset(0, v),
+                            child: c,
+                          ),
+                          child: child,
+                        ),
+                        child: _buildTaskList(context, dayTasks),
+                      ),
                     ),
                   ],
                   ),

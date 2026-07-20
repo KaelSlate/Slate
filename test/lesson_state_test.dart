@@ -117,6 +117,25 @@ void main() {
       expect(find.textContaining('drag'), findsOneWidget);
     });
 
+    testWidgets('a zoom invite that gives up steps aside — it must not seal '
+        'the ladder behind it', (tester) async {
+      // Someone who never touches the wheel: zoom spends its whole budget and
+      // stays UNLEARNED forever. Gating the rest on zoom being learned meant
+      // the drag invite could never be reached by this user, ever.
+      for (var i = 0; i < 3; i++) {
+        ls.debugNewSession();
+        await pump(tester);
+      }
+      expect(ls.isLearned(Lessons.zoom.id), isFalse);
+      expect(ls.inviteAvailable(Lessons.zoom), isFalse, reason: 'budget spent');
+
+      await pump(tester);
+      expect(find.textContaining('Ctrl + scroll'), findsNothing,
+          reason: 'it gave up — no nagging');
+      expect(find.textContaining('drag'), findsOneWidget,
+          reason: 'the ladder moves on');
+    });
+
     testWidgets('no drag invite when there is nothing to drag', (tester) async {
       ls.learn(Lessons.zoom.id);
       await pump(tester, hasTasks: false);

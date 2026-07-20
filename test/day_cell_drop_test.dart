@@ -57,7 +57,7 @@ Widget cellHarness({
               taskState: ts,
               settleTopOffset: settleTop,
               railHeight: rail,
-              builder: (dividerKey) => Stack(
+              builder: (dividerKey, railInset) => Stack(
                 children: [
                   const SizedBox.expand(),
                   if (dividerAt != null)

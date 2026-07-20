@@ -153,16 +153,24 @@ bool FlutterWindow::OnCreate() {
         }
       });
 
-  // GENESIS 7.0 FIX: Show window IMMEDIATELY - don't wait for first frame
-  // This ensures the window is visible even during shader compilation.
-  // --hidden (autostart) skips both shows: tray + hotkey only, no window.
+  // Shown IMMEDIATELY, not on the first frame: the window class now carries the
+  // app's own warm-graphite brush (win32_window.cpp), so what appears instantly
+  // is Slate's background rather than a white unpainted surface. Waiting for the
+  // first frame instead would trade a flash for a second of nothing at all.
+  // --hidden (autostart) shows nothing: tray + hotkey only.
   if (!start_hidden_) {
     this->Show();
-
-    flutter_controller_->engine()->SetNextFrameCallback([&]() {
-      this->Show();  // Show again when first frame is ready (ensures proper render)
-    });
   }
+
+  // Anything that isn't needed to DRAW the first frame is deferred past it —
+  // it was all competing with that frame for the CPU. Raster thread → post,
+  // never run work here (see SetFirstFrameCallback).
+  first_frame_msg_ = ::RegisterWindowMessageW(L"Slate.FirstFrame");
+  HWND self = GetHandle();
+  UINT msg = first_frame_msg_;
+  flutter_controller_->engine()->SetNextFrameCallback([self, msg]() {
+    ::PostMessageW(self, msg, 0, 0);
+  });
 
   // Flutter can complete the first frame before the "show window" callback is
   // registered. The following call ensures a frame is pending to ensure the
@@ -211,6 +219,14 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         shutdown();
       }
     }
+    return 0;
+  }
+
+  // First frame is up — run the work we held back, once, on this thread.
+  if (message == first_frame_msg_ && first_frame_msg_ != 0 &&
+      !first_frame_done_) {
+    first_frame_done_ = true;
+    if (first_frame_cb_) first_frame_cb_();
     return 0;
   }
 

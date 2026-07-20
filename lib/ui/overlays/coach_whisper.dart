@@ -79,8 +79,13 @@ class _CoachWhisperState extends State<CoachWhisper> {
     // arrived, so there is nothing left to invite you to.
     if (StaircaseState.currentLevel == StaircaseLevel.day) return null;
 
-    if (!ls.isLearned(Lessons.zoom.id)) {
-      return ls.inviteAvailable(Lessons.zoom) ? Lessons.zoom : null;
+    // Zoom goes first — but only while it still has something to say. Gating the
+    // rest on zoom being LEARNED sealed the ladder: someone who never touches
+    // the wheel burns zoom's three sightings, zoom stays unlearned forever, and
+    // the drag invite below could never be reached. An invite that gives up must
+    // step aside, not lock the door.
+    if (!ls.isLearned(Lessons.zoom.id) && ls.inviteAvailable(Lessons.zoom)) {
+      return Lessons.zoom;
     }
     // Ordered by dependency, not by script: don't invite someone to drag a task
     // between days before they have ever opened one.

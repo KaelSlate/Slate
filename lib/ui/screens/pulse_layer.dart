@@ -135,6 +135,13 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
   static const double _zoomExitTo = 1.08;    // outgoing ends here (zoom-in)
   static const double _zoomFadeInStart = 0.35; // incoming opacity ramps from here
   static const double _zoomFadeOutEnd = 0.45;  // outgoing gone by this exit progress
+  /// The incoming view is fully opaque HERE, not at t == 1.0 — deliberately.
+  /// `Opacity` is the PARENT of the scale, so alpha reaching 255 drops a
+  /// saveLayer on exactly the frame the scale lands and filterQuality goes null:
+  /// three paint-path changes in one frame, which is what made text and clip
+  /// edges twitch at the end of a zoom. Landing the fade early means no single
+  /// frame ever changes two paths. 0.9 of 360ms — the eye cannot see the split.
+  static const double _zoomFadeInEnd = 0.9;
 
   @override
   void initState() {
@@ -217,6 +224,12 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     // EditableTextState is the canonical indicator that a text input is active.
     return ctx.findAncestorStateOfType<EditableTextState>() != null;
   }
+
+  static bool _isArrowKey(LogicalKeyboardKey k) =>
+      k == LogicalKeyboardKey.arrowUp ||
+      k == LogicalKeyboardKey.arrowDown ||
+      k == LogicalKeyboardKey.arrowLeft ||
+      k == LogicalKeyboardKey.arrowRight;
 
   bool _globalKeyHandler(KeyEvent event) {
     if (event is! KeyDownEvent) return false;
@@ -316,7 +329,11 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     }
 
     // ── Arrow Keys — Spatial canvas scrolling ────────────────────────────────
-    if (noModifiers && !_isTextFieldFocused()) {
+    // This block answers for ARROWS ONLY. It must never return for another key:
+    // a blanket `return false` here used to swallow Esc on week/month (the Esc
+    // branch below was simply unreachable), which is why the inbox closed on
+    // Escape in the day view and nowhere else.
+    if (noModifiers && !_isTextFieldFocused() && _isArrowKey(event.logicalKey)) {
       final level = StaircaseState.currentLevel;
 
       // MONTH view: Left/Right move selected date ±1 day (for Ctrl+Scroll target);
@@ -600,8 +617,12 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
                                 double s, o;
                                 if (entering) {
                                   s = 0.985 + 0.015 * Curves.easeOutCubic.transform(t);
-                                  o = Curves.easeOut
-                                      .transform(((t - 0.35) / 0.65).clamp(0.0, 1.0));
+                                  // Opaque by _zoomFadeInEnd, not at 1.0 — see
+                                  // the constant's note (one paint-path change
+                                  // per frame).
+                                  o = Curves.easeOut.transform(
+                                      ((t - 0.35) / (_zoomFadeInEnd - 0.35))
+                                          .clamp(0.0, 1.0));
                                 } else {
                                   final u = 1.0 - t;
                                   s = 1.0 - 0.015 * Curves.easeIn.transform(u);
@@ -642,7 +663,8 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
                                 scale =
                                     from + (1.0 - from) * Curves.easeOutCubic.transform(t);
                                 opacity = Curves.easeOut.transform(
-                                  ((t - _zoomFadeInStart) / (1.0 - _zoomFadeInStart))
+                                  ((t - _zoomFadeInStart) /
+                                          (_zoomFadeInEnd - _zoomFadeInStart))
                                       .clamp(0.0, 1.0),
                                 );
                               } else {

@@ -97,7 +97,16 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     window_class.hInstance = GetModuleHandle(nullptr);
     window_class.hIcon =
         LoadIcon(window_class.hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
-    window_class.hbrBackground = 0;
+    // Warm graphite (AppTheme.background 0xFF15110D), not 0.
+    //
+    // This is the whole "white flash on launch" fix. With no class brush,
+    // DefWindowProc never erases, so from the moment the window is shown until
+    // Flutter presents its first frame the client area is an uninitialised DWM
+    // redirection surface — which reads as WHITE. Dart does set the same colour,
+    // but only at the end of the boot prologue, a second too late. The brush
+    // makes the very first pixel the app's own background: the window is born
+    // dark and simply fills in.
+    window_class.hbrBackground = ::CreateSolidBrush(RGB(0x15, 0x11, 0x0D));
     window_class.lpszMenuName = nullptr;
     window_class.lpfnWndProc = Win32Window::WndProc;
     RegisterClass(&window_class);

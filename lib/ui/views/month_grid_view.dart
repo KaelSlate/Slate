@@ -346,7 +346,15 @@ class _MonthGridViewState extends State<MonthGridView> {
           'July', 'August', 'September', 'October', 'November', 'December'
         ];
 
-        return Row(
+        // Pinned to a WHOLE number of pixels. Left free, the row took its
+        // height from the "Today" pill (≈22.31 — font metrics + 0.5 borders),
+        // which centred the 22.0 title at dy 0.157 and pushed every row below
+        // onto a fractional y. A glyph on a fractional baseline is drawn one way
+        // through the zoom's resampled raster and another way at rest — that one
+        // pixel at the end of the transition was the title "sliding down".
+        return SizedBox(
+          height: 24,
+          child: Row(
           children: [
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 200),
@@ -382,6 +390,7 @@ class _MonthGridViewState extends State<MonthGridView> {
             ),
             const SizedBox(width: 8),
           ],
+          ),
         );
       },
     );
@@ -411,7 +420,12 @@ class _MonthGridViewState extends State<MonthGridView> {
 
   Widget _buildWeekdayLabels() {
     const labels = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-    return Row(
+    // Whole pixels, same reason as the header row: Inter@9 measures ≈10.9 and
+    // that fraction lands on everything below it — including the grid, whose
+    // bottom row then sits on a fractional edge against its clip.
+    return SizedBox(
+      height: 12,
+      child: Row(
       children: labels
           .map((l) => Expanded(
                 child: Center(
@@ -428,6 +442,7 @@ class _MonthGridViewState extends State<MonthGridView> {
                 ),
               ))
           .toList(),
+      ),
     );
   }
 }
@@ -500,18 +515,28 @@ class _MonthPageState extends State<_MonthPage> {
     final daysInPrevMonth =
         DateUtils.getDaysInMonth(prevMonth.year, prevMonth.month);
 
+    // Bottom gets more slack than the top on purpose — see the floor() below.
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.only(top: 4, bottom: 6),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final w = constraints.maxWidth;
           final h = constraints.maxHeight;
 
           final cellW = (w - (7 - 1) * 3) / 7;
-          final cellH = (h - (rows - 1) * 3) / rows;
+          // Floored so the last row always ENDS above the viewport edge. The
+          // exact fit left it flush against the grid's clip, and while the zoom
+          // holds filterQuality:low the whole view is rasterised and bilinearly
+          // resampled — sampling at a layer edge pulls in transparent from
+          // outside and eats a sliver off the bottom cards for the length of the
+          // transition. Slack means the sampled edge is padding, not a card.
+          final cellH = ((h - (rows - 1) * 3) / rows).floorToDouble();
 
           return GridView.builder(
             physics: const NeverScrollableScrollPhysics(),
+            // Nothing to clip: never scrollable, and the rows are sized to fit
+            // with slack. No clip = no edge to sample across.
+            clipBehavior: Clip.none,
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 7,
               mainAxisSpacing: 3,
@@ -750,7 +775,7 @@ class _MonthPageState extends State<_MonthPage> {
       // line, which means nothing mid-drag anyway.
       railHeight: 15,
       highlightRadius: BorderRadius.circular(AppTheme.radiusXLarge),
-      builder: (dividerKey) => MouseRegion(
+      builder: (dividerKey, railInset) => MouseRegion(
       onEnter: (_) {
         // ALWAYS record it, even mid-drag: discarding the enter here is why the
         // cell stayed dead after a drop — the pointer never left, so no second
@@ -880,10 +905,29 @@ class _MonthPageState extends State<_MonthPage> {
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 5),
                               child: ClipRect(
-                                child: SingleChildScrollView(
-                                  physics: const NeverScrollableScrollPhysics(),
-                                  child: _buildMonthTaskList(
-                                      dayTasks, date, dividerKey),
+                                // Steps aside for the "Anytime" rail exactly
+                                // like the week column does. Bottom rows slide
+                                // under this ClipRect — fine: mid-drag they are
+                                // the "+N more" region, which says nothing.
+                                child: ValueListenableBuilder<double>(
+                                  valueListenable: railInset,
+                                  builder: (_, inset, child) =>
+                                      TweenAnimationBuilder<double>(
+                                    tween: Tween<double>(end: inset),
+                                    duration: const Duration(milliseconds: 180),
+                                    curve: Curves.easeOutCubic,
+                                    builder: (_, v, c) => Transform.translate(
+                                      offset: Offset(0, v),
+                                      child: c,
+                                    ),
+                                    child: child,
+                                  ),
+                                  child: SingleChildScrollView(
+                                    physics:
+                                        const NeverScrollableScrollPhysics(),
+                                    child: _buildMonthTaskList(
+                                        dayTasks, date, dividerKey),
+                                  ),
                                 ),
                               ),
                             ),

@@ -29,6 +29,13 @@ class FlutterWindow : public Win32Window {
   // (one engine, one DB) as `pillCapture` on slate/shell.
   void SendCapture(const flutter::EncodableValue& value);
 
+  // Runs ONCE on the UI thread after this window has presented its first frame.
+  // Anything heavy that isn't needed to draw that frame belongs here — see
+  // main(), which defers booting the pill's second Flutter engine onto it.
+  void SetFirstFrameCallback(std::function<void()> cb) {
+    first_frame_cb_ = std::move(cb);
+  }
+
  protected:
   // Win32Window:
   bool OnCreate() override;
@@ -58,6 +65,13 @@ class FlutterWindow : public Win32Window {
 
   // Raises the separate pill window (wired to PillWindow::ShowPill in main()).
   std::function<void()> show_pill_cb_;
+
+  // Deferred-until-first-frame work. The engine's frame callback arrives on the
+  // RASTER thread, so it only posts |first_frame_msg_|; the callback itself runs
+  // from MessageHandler, i.e. on the UI thread, exactly once.
+  std::function<void()> first_frame_cb_;
+  UINT first_frame_msg_ = 0;
+  bool first_frame_done_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
