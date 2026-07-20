@@ -782,8 +782,11 @@ class _DayFlowViewState extends State<DayFlowView>
                 valueListenable: widget.taskState!.tasksForDateNotifier(
                     currentRibbonDate.millisecondsSinceEpoch),
                 builder: (context, dayTasks, child) {
-                  final unallocated = TaskState.orderUnallocated(
-                      dayTasks.where((t) => !t.isAllocated).toList());
+                  // RAW, unordered: the ghost and the landing card are appended
+                  // first and the whole lot is ordered ONCE below, so a preview
+                  // can never sit somewhere the drop won't put it.
+                  final rawUnallocated =
+                      dayTasks.where((t) => !t.isAllocated).toList();
                   final scheduled = dayTasks.where((t) => t.isAllocated).toList()
                     ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
 
@@ -803,10 +806,10 @@ class _DayFlowViewState extends State<DayFlowView>
                   final preview = hover?.zoneId == _PlanningPaneZone.zoneId
                       ? DropFuture.forDate(currentRibbonDate)
                       : null;
-                  final displayUnallocated = List<RustTask>.from(unallocated);
+                  final pending = List<RustTask>.from(rawUnallocated);
 
                   if (hasGhostList) {
-                    displayUnallocated.insert(0, RustTask(
+                    pending.add(RustTask(
                       id: 'ghost',
                       title: ghostRes.cleanTitle,
                       isCompleted: false,
@@ -819,13 +822,16 @@ class _DayFlowViewState extends State<DayFlowView>
                   // Splice the incoming card in only when it isn't already in
                   // this group; otherwise the real (dimmed) card is the show.
                   final showPreview = preview != null &&
-                      !displayUnallocated
-                          .any((t) => t.id == preview.projected.id);
-                  // After the ghost — what you are typing stays the first row.
-                  if (showPreview) {
-                    displayUnallocated.insert(
-                        hasGhostList ? 1 : 0, preview.projected);
-                  }
+                      !pending.any((t) => t.id == preview.projected.id);
+                  if (showPreview) pending.add(preview.projected);
+
+                  // Ordered ONCE, over the real rows AND the pending ones, by
+                  // the same function the list uses after the drop. Appending
+                  // mirrors the store's append, so the spot the preview shows
+                  // is the spot the drop commits — importance still wins, and a
+                  // plain card lands BELOW a «!!» one instead of jumping there.
+                  final displayUnallocated =
+                      TaskState.orderUnallocated(pending);
                   // The hour being handed over, struck through on the group
                   // head. Same sentence the week's rail says.
                   final st = DragSession.instance.payload?.task.startTime;

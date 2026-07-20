@@ -216,6 +216,9 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
     return DropResult(
       settleGlobalRect:
           Rect.fromLTWH(r.left + 6, top, r.width - 12, widget.settleHeight),
+      // If it sorts below the cap it gets no row; then it dissolves into the
+      // «+N more» pile, which is where it actually went.
+      settleFallbackId: DragCardRegistry.pileId(widget.date),
     );
   }
 

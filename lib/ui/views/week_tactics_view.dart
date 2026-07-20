@@ -819,20 +819,24 @@ class _DayColumnState extends State<_DayColumn> {
           final showPreview = preview != null &&
               !dayTasks.any((t) => t.id == preview.projected.id);
 
-          final unallocated = TaskState.orderUnallocated(
-              dayTasks.where((t) => t.startTime == null).toList());
-          final allocated = dayTasks.where((t) => t.startTime != null).toList()
-            ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+          // Append the incoming card FIRST, then order the whole lot with the
+          // same function the list uses after the drop — inserting it at 0
+          // showed it above a «!!» task and then dropped it below, a preview
+          // promising a place the drop would not honour.
+          final rawUntimed =
+              dayTasks.where((t) => t.startTime == null).toList();
+          final allocated = dayTasks.where((t) => t.startTime != null).toList();
 
           if (showPreview) {
             if (preview.keepsTime) {
-              allocated
-                ..add(preview.projected)
-                ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+              allocated.add(preview.projected);
             } else {
-              unallocated.insert(0, preview.projected);
+              rawUntimed.add(preview.projected);
             }
           }
+          allocated
+              .sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+          final unallocated = TaskState.orderUnallocated(rawUntimed);
           // A row playing its collapse is already gone as far as CAPACITY goes:
           // that's what promotes the next card DURING the collapse instead of
           // popping it in after. It is still emitted, so the collapse plays.
@@ -927,22 +931,25 @@ class _DayColumnState extends State<_DayColumn> {
                   // Fades rather than cuts: on a delete the label reaches its
                   // final value while the promoted card is still gliding up, so
                   // the two cross instead of swapping in one frame.
-                  AnimatedOpacity(
+                  SettleAnchor(
                     key: const ValueKey('more'),
-                    duration: const Duration(milliseconds: 160),
-                    curve: Curves.easeOut,
-                    opacity: hiddenCount > 0 ? 1.0 : 0.0,
-                    child: hiddenCount > 0
-                        ? Padding(
-                            padding: const EdgeInsets.only(top: 4, bottom: 2),
-                            child: Text('+$hiddenCount more',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontFamily: 'Inter', fontSize: 9,
-                                  color: Colors.white.withOpacity(0.3),
-                                )),
-                          )
-                        : const SizedBox.shrink(),
+                    id: DragCardRegistry.pileId(cellDate),
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      opacity: hiddenCount > 0 ? 1.0 : 0.0,
+                      child: hiddenCount > 0
+                          ? Padding(
+                              padding: const EdgeInsets.only(top: 4, bottom: 2),
+                              child: Text('+$hiddenCount more',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontFamily: 'Inter', fontSize: 9,
+                                    color: Colors.white.withOpacity(0.3),
+                                  )),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
                   ),
                 ],
               ),

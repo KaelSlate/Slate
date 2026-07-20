@@ -636,20 +636,23 @@ class _MonthPageState extends State<_MonthPage> {
         final showPreview = preview != null &&
             !dayTasks.any((t) => t.id == preview.projected.id);
 
-        final unallocated = TaskState.orderUnallocated(
-            dayTasks.where((t) => t.startTime == null).toList());
-        final allocated = dayTasks.where((t) => t.startTime != null).toList()
-          ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+        // Append the incoming card FIRST, then order the whole lot with the
+        // same function the list uses after the drop — inserting it at 0 showed
+        // it above a «!!» task and then dropped it below, a preview promising a
+        // place the drop would not honour.
+        final rawUntimed =
+            dayTasks.where((t) => t.startTime == null).toList();
+        final allocated = dayTasks.where((t) => t.startTime != null).toList();
 
         if (showPreview) {
           if (preview.keepsTime) {
-            allocated
-              ..add(preview.projected)
-              ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+            allocated.add(preview.projected);
           } else {
-            unallocated.insert(0, preview.projected);
+            rawUntimed.add(preview.projected);
           }
         }
+        allocated.sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+        final unallocated = TaskState.orderUnallocated(rawUntimed);
         // A collapsing row is already gone for CAPACITY — that is what promotes
         // the next card DURING the collapse instead of popping it in after, and
         // it is what stops «+N more» from sitting for a beat in the slot the
@@ -736,20 +739,23 @@ class _MonthPageState extends State<_MonthPage> {
               // so it crosses with the promoted card instead of being cut out.
               IgnorePointer(
                 key: const ValueKey('more'),
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 160),
-                  curve: Curves.easeOut,
-                  opacity: hiddenCount > 0 ? 1.0 : 0.0,
-                  child: hiddenCount > 0
-                      ? Text(
-                          '+$hiddenCount more',
-                          style: TextStyle(
-                            fontFamily: 'Inter',
-                            fontSize: 8.5,
-                            color: Colors.white.withOpacity(0.22),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
+                child: SettleAnchor(
+                  id: DragCardRegistry.pileId(date),
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOut,
+                    opacity: hiddenCount > 0 ? 1.0 : 0.0,
+                    child: hiddenCount > 0
+                        ? Text(
+                            '+$hiddenCount more',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 8.5,
+                              color: Colors.white.withOpacity(0.22),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                 ),
               ),
             ],

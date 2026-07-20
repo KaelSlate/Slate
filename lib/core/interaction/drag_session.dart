@@ -83,10 +83,19 @@ class DropResult {
   final Rect? settleGlobalRect;
   /// When true, the session waits one frame after the mutation and retargets
   /// the settle onto the REAL card the drop produced (pixel-perfect landing).
-  /// The rect above is the fallback if the card isn't in the tree (e.g.
-  /// hidden behind a «+N more» cap).
   final bool refineToCard;
-  const DropResult({this.settleGlobalRect, this.refineToCard = true});
+
+  /// Where to land when the card ISN'T in the tree — it sorted below a cell's
+  /// «+N more» cap. Flying to an estimated row then would animate to a place
+  /// the card is not: it froze mid-cell and vanished. The pile is where the
+  /// task genuinely went, so the preview dissolves INTO the «+N more» label.
+  final String? settleFallbackId;
+
+  const DropResult({
+    this.settleGlobalRect,
+    this.refineToCard = true,
+    this.settleFallbackId,
+  });
 }
 
 /// Live card-rect providers keyed by task id (fed by DragSource wrappers) —
@@ -104,6 +113,10 @@ class DragCardRegistry {
     list.remove(provider);
     if (list.isEmpty) _providers.remove(taskId);
   }
+
+  /// Key for a cell's «+N more» pile — the landing place for a card that sorts
+  /// below the cap and so never gets a row of its own.
+  static String pileId(DateTime d) => 'pile-${d.year}-${d.month}-${d.day}';
 
   static Rect? rectFor(String taskId) {
     final list = _providers[taskId];
@@ -289,8 +302,10 @@ class DragSession extends ChangeNotifier {
       // rebuild, then land on the real card's live rect.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_phase != DragPhase.active || _payload != payload) return;
-        _settleTarget =
-            DragCardRegistry.rectFor(payload.task.id) ?? _settleTarget;
+        final fb = result.settleFallbackId;
+        _settleTarget = DragCardRegistry.rectFor(payload.task.id) ??
+            (fb == null ? null : DragCardRegistry.rectFor(fb)) ??
+            _settleTarget;
         _setPhase(DragPhase.settling);
       });
       WidgetsBinding.instance.scheduleFrame();

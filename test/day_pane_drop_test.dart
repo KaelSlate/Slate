@@ -218,6 +218,47 @@ void main() {
     expect(f.projected.title, 'future me');
   });
 
+  test('THE PREVIEW MUST NOT LIE ABOUT POSITION: shown spot == landed spot',
+      () async {
+    // The pane sorts by importance first (orderUnallocated). Splicing the
+    // incoming card at index 0 showed it above a !! task and then dropped it
+    // below — the preview promised a place the drop did not honour.
+    final d = day(20);
+    await ts.createTask('important !!', d.millisecondsSinceEpoch);
+    final imp = ts.tasks.firstWhere((t) => t.title == 'important !!');
+    ts.updateTask(imp.copyWith(priority: 2));
+
+    final other = day(21);
+    await ts.createTask('plain incoming', other.millisecondsSinceEpoch);
+    final incoming = ts.tasks.firstWhere((t) => t.title == 'plain incoming');
+    expect(incoming.priority, 0);
+
+    List<String> untimedTitlesOn(DateTime x) => TaskState.orderUnallocated(
+            ts.tasksForDateNotifier(x.millisecondsSinceEpoch).value
+                .where((t) => t.startTime == null)
+                .toList())
+        .map((t) => t.title)
+        .toList();
+
+    // What the pane WOULD show if the projected card is appended and then
+    // ordered the same way the real list is.
+    final raw = ts.tasksForDateNotifier(d.millisecondsSinceEpoch).value
+        .where((t) => t.startTime == null)
+        .toList()
+      ..add(incoming);
+    final predicted =
+        TaskState.orderUnallocated(raw).map((t) => t.title).toList();
+
+    // Now really move it there.
+    ts.assignToDay(incoming, d);
+    final actual = untimedTitlesOn(d);
+
+    expect(actual, predicted,
+        reason: 'the future the pane draws must be the future it commits');
+    expect(actual.first, 'important !!',
+        reason: 'importance wins — the plain card lands BELOW it');
+  });
+
   testWidgets('the group head says ANYTIME, and hands the hour over',
       (tester) async {
     final d = day(8);

@@ -4,6 +4,54 @@ import 'package:flutter/material.dart';
 import '../../core/engine/slate_core_bridge.dart';
 import '../../core/interaction/drag_session.dart';
 
+/// Publishes its rect under [id] so a settling drop can land on it when the
+/// card it created has no row — a cell's «+N more» pile. Same registry as
+/// DragSource, so the flight code needs no special case.
+class SettleAnchor extends StatefulWidget {
+  final String id;
+  final Widget child;
+  const SettleAnchor({super.key, required this.id, required this.child});
+
+  @override
+  State<SettleAnchor> createState() => _SettleAnchorState();
+}
+
+class _SettleAnchorState extends State<SettleAnchor> {
+  @override
+  void initState() {
+    super.initState();
+    DragCardRegistry.register(widget.id, _liveRect);
+  }
+
+  @override
+  void didUpdateWidget(SettleAnchor old) {
+    super.didUpdateWidget(old);
+    if (old.id != widget.id) {
+      DragCardRegistry.unregister(old.id, _liveRect);
+      DragCardRegistry.register(widget.id, _liveRect);
+    }
+  }
+
+  @override
+  void dispose() {
+    DragCardRegistry.unregister(widget.id, _liveRect);
+    super.dispose();
+  }
+
+  Rect? _liveRect() {
+    if (!mounted) return null;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize) return null;
+    // Zero-size while the label is faded out (hiddenCount == 0) — no pile, so
+    // nothing to land on, and the caller falls through to its own estimate.
+    if (box.size.isEmpty) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
 /// Lift-on-drag wrapper: LMB + ~5px of travel → DragSession.begin.
 /// Plain clicks pass through untouched (mouse tap slop is 1px, so the child's
 /// tap recognizer has already rejected by the time we lift — no double-fire).
