@@ -17,7 +17,8 @@
 //!   - `5-6pm`, `8am-5pm`, `5pm-7` (meridiem colors the bare side)
 //!   - `from 12 to 16`, `from 9 to 5pm`, `from 11pm to 2` (the English «с…до»)
 //!   - `at 5` (bare 1..=7 leans PM — "at 5" means 17:00 to a human), `at 17`
-//!   - `noon`, `midnight` (with or without "at")
+//!   - `noon`, `midnight`, `полдень`, `полночь` (with or without at/в)
+//!   - `на 12 июля`, `в 15.07`, `on jul 12` (a preposition before a date)
 //!   - `на 14`, `в 2` (at 14, at 2)
 //!   - `в 2 часа`, `в 14 часов`
 //!   - `9 вечера` (9 PM), `9 утра` (9 AM), `3 дня` (3 PM), `12 ночи` (12 AM)
@@ -109,16 +110,20 @@ fn parse_input_opts(raw: &str, extract_date_enabled: bool) -> ParsedInput {
     // ── Step 2: Tags ──────────────────────────────────────────────────────────
     let tags = extract_tags(&mut text);
 
-    // ── Step 3: Time ──────────────────────────────────────────────────────────
-    let (start_time, end_time) = extract_time(&mut text);
-
-    // ── Step 4: Date (after time: dotted HH.MM keeps precedence rules local) ──
+    // ── Step 3: Date BEFORE time ──────────────────────────────────────────────
+    // A calendar date can wear a preposition that also opens a bare-hour time:
+    // «на 12 июля» is July 12, but the time parser would grab «на 12» = 12:00
+    // and orphan «июля». Claiming the date first settles it; the HH.MM-vs-DD.MM
+    // ambiguity is handled locally in each parser, so order is otherwise safe.
     // Targeted mode leaves the date in place as ordinary title text.
     let date = if extract_date_enabled {
         extract_date(&mut text)
     } else {
         None
     };
+
+    // ── Step 4: Time ──────────────────────────────────────────────────────────
+    let (start_time, end_time) = extract_time(&mut text);
 
     // ── Step 5: Cleanup ───────────────────────────────────────────────────────
     let clean_title = normalize_whitespace(&text);
@@ -932,14 +937,23 @@ fn try_extract_english_at(text: &mut String) -> Option<(Option<i64>, Option<i64>
 /// `noon` → 12:00, `midnight` → 00:00; a preceding "at " is swept with it.
 fn try_extract_noon_midnight(text: &mut String) -> Option<(Option<i64>, Option<i64>)> {
     let lower = text.to_lowercase();
-    for (word, mins) in [("midnight", 0i64), ("noon", 720i64)] {
+    // «полночь»/«полдень» mirror midnight/noon; a leading «at »/«в » is swept in.
+    for (word, mins) in [
+        ("midnight", 0i64), ("noon", 720i64),
+        ("полночь", 0i64), ("полдень", 720i64),
+    ] {
         let Some(pos) = find_word(&lower, word) else { continue };
         let mut start = pos;
         let head = &lower[..pos];
-        if head.ends_with("at ") {
-            let p = pos - 3;
-            if p == 0 || lower.as_bytes().get(p - 1).is_none_or(|b| b.is_ascii_whitespace()) {
-                start = p;
+        for p in &["at ", "в "] {
+            if head.ends_with(p) {
+                let cand = pos - p.len();
+                if cand == 0
+                    || lower.as_bytes().get(cand - 1).is_none_or(|b| b.is_ascii_whitespace())
+                {
+                    start = cand;
+                }
+                break;
             }
         }
         text.replace_range(start..pos + word.len(), "");
@@ -1110,7 +1124,9 @@ fn try_extract_numeric_date(text: &mut String) -> Option<DateToken> {
         if let Some((day, month, year, consumed)) = parse_numeric_date_at(&bytes, i) {
             let end = i + consumed;
             if is_boundary_after(text, end) {
-                text.replace_range(i..end, "");
+                let lower = text.to_lowercase();
+                let from = consume_date_prefix(&lower, i);
+                text.replace_range(from..end, "");
                 return Some(DateToken::Explicit(year, month, day));
             }
         }
@@ -1173,6 +1189,21 @@ const MONTH_NAMES: &[(&str, i64)] = &[
     ("aug", 8), ("sep", 9), ("oct", 10), ("nov", 11), ("dec", 12),
 ];
 
+/// A date can be introduced by a preposition that belongs to it: «на 12 июля»,
+/// «в 15.07», «on jul 12». Extend the match leftward over that word so it does
+/// not survive in the title. Returns the (possibly earlier) start byte.
+fn consume_date_prefix(lower: &str, start: usize) -> usize {
+    for p in &["на ", "в ", "on "] {
+        if start >= p.len() && lower[..start].ends_with(p) {
+            let cand = start - p.len();
+            if cand == 0 || lower.as_bytes()[cand - 1].is_ascii_whitespace() {
+                return cand;
+            }
+        }
+    }
+    start
+}
+
 /// «15 июля» / «jul 15» / «15 jul». A month name alone is not a date.
 fn try_extract_month_name_date(text: &mut String) -> Option<DateToken> {
     let lower = text.to_lowercase();
@@ -1189,7 +1220,8 @@ fn try_extract_month_name_date(text: &mut String) -> Option<DateToken> {
                     && is_boundary_before(lower.as_bytes(), num.start)
                     && lower.as_bytes().get(num.start).map_or(false, |b| b.is_ascii_digit())
                 {
-                    text.replace_range(num.start..end, "");
+                    let from = consume_date_prefix(&lower, num.start);
+                    text.replace_range(from..end, "");
                     return Some(DateToken::Explicit(0, month, num.value as i64));
                 }
             }
@@ -1208,7 +1240,8 @@ fn try_extract_month_name_date(text: &mut String) -> Option<DateToken> {
             if q > num_start && q - num_start <= 2 && is_boundary_after(&lower, q) {
                 if let Some(day) = digits_val(bytes, num_start, q) {
                     if (1..=31).contains(&day) {
-                        text.replace_range(pos..q, "");
+                        let from = consume_date_prefix(&lower, pos);
+                        text.replace_range(from..q, "");
                         return Some(DateToken::Explicit(0, month, day));
                     }
                 }
@@ -1624,6 +1657,41 @@ mod tests {
         let r = parse_input("dentist day after tomorrow");
         assert_eq!(r.date, Some(DateToken::Offset(2)));
         assert_eq!(r.clean_title, "dentist");
+    }
+
+    #[test]
+    fn test_preposition_before_date() {
+        // "на 12 июля" must read as July 12, not 12:00 + orphan "июля".
+        let r = parse_input("покушать на 12 июля");
+        assert_eq!(r.date, Some(DateToken::Explicit(0, 7, 12)));
+        assert_eq!(r.start_time, None);
+        assert_eq!(r.clean_title, "покушать");
+
+        let r2 = parse_input("отчёт на 15.07");
+        assert_eq!(r2.date, Some(DateToken::Explicit(0, 7, 15)));
+        assert_eq!(r2.clean_title, "отчёт");
+
+        let r3 = parse_input("праздник в 12 июля");
+        assert_eq!(r3.date, Some(DateToken::Explicit(0, 7, 12)));
+        assert_eq!(r3.clean_title, "праздник");
+
+        let r4 = parse_input("call on jul 12");
+        assert_eq!(r4.date, Some(DateToken::Explicit(0, 7, 12)));
+        assert_eq!(r4.clean_title, "call");
+
+        // Regression: bare "на 12" with NO month stays a 12:00 time.
+        let r5 = parse_input("встреча на 12");
+        assert_eq!(r5.start_time, Some(12 * 60));
+        assert_eq!(r5.date, None);
+    }
+
+    #[test]
+    fn test_russian_noon_midnight() {
+        let r = parse_input("обед в полдень");
+        assert_eq!(r.start_time, Some(12 * 60));
+        assert_eq!(r.clean_title, "обед");
+        assert_eq!(parse_input("релиз в полночь").start_time, Some(0));
+        assert_eq!(parse_input("сон полночь").start_time, Some(0));
     }
 
     #[test]
