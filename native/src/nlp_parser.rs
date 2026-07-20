@@ -15,6 +15,7 @@
 //!   - `14:00-15:30` (range)
 //!   - `5pm`, `9 am`, `5:30pm`, `12am`/`12pm`
 //!   - `5-6pm`, `8am-5pm`, `5pm-7` (meridiem colors the bare side)
+//!   - `from 12 to 16`, `from 9 to 5pm`, `from 11pm to 2` (the English «с…до»)
 //!   - `at 5` (bare 1..=7 leans PM — "at 5" means 17:00 to a human), `at 17`
 //!   - `noon`, `midnight` (with or without "at")
 //!   - `на 14`, `в 2` (at 14, at 2)
@@ -737,8 +738,13 @@ fn apply_default_duration_if_open(r: (Option<i64>, Option<i64>)) -> (Option<i64>
     }
 }
 
-/// English pass, in order: time-with-meridiem (single or range) → "at N" → noon/midnight.
+/// English pass, in order: "from X to Y" → time-with-meridiem (single or
+/// range) → "at N" → noon/midnight. from-to must run first: the meridiem
+/// scan would otherwise strip the "5pm" out of "from 9 to 5pm".
 fn try_extract_english_time(text: &mut String) -> Option<(Option<i64>, Option<i64>)> {
+    if let Some(r) = try_extract_english_from_to(text) {
+        return Some(r);
+    }
     if let Some(r) = try_extract_meridiem_time(text) {
         return Some(r);
     }
@@ -746,6 +752,54 @@ fn try_extract_english_time(text: &mut String) -> Option<(Option<i64>, Option<i6
         return Some(r);
     }
     try_extract_noon_midnight(text)
+}
+
+/// "from X to Y" — the English «с X до Y». Bare hours stay literal (as in
+/// the Russian form); a meridiem on either side colors the range by the same
+/// rules as dash ranges. End at/before start crosses midnight.
+fn try_extract_english_from_to(text: &mut String) -> Option<(Option<i64>, Option<i64>)> {
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    let marker = "from ";
+    let mut search = 0usize;
+
+    while let Some(rel) = lower[search..].find(marker) {
+        let pos = search + rel;
+        let before_ok = pos == 0
+            || bytes.get(pos - 1).is_none_or(|b| b.is_ascii_whitespace());
+        if !before_ok {
+            search = pos + marker.len();
+            continue;
+        }
+        let t1_pos = pos + marker.len();
+        if let Some((t1, c1)) = try_parse_any_time_at(bytes, t1_pos) {
+            let after_t1 = t1_pos + c1;
+            let mer1 = try_parse_meridiem_at(bytes, after_t1);
+            let after_m1 = after_t1 + mer1.map_or(0, |(_, c)| c);
+            const TO: &str = " to ";
+            if lower[after_m1..].starts_with(TO) {
+                let t2_pos = after_m1 + TO.len();
+                if let Some((t2, c2)) = try_parse_any_time_at(bytes, t2_pos) {
+                    let after_t2 = t2_pos + c2;
+                    let mer2 = try_parse_meridiem_at(bytes, after_t2);
+                    let after_m2 = after_t2 + mer2.map_or(0, |(_, c)| c);
+                    let resolved = match (mer1, mer2) {
+                        (None, None) => {
+                            Some((t1, if t2 <= t1 { t2 + 1440 } else { t2 }))
+                        }
+                        _ => resolve_meridiem_range(
+                            t1, mer1.map(|(m, _)| m), t2, mer2.map(|(m, _)| m)),
+                    };
+                    if let Some((s, e)) = resolved {
+                        text.replace_range(pos..after_m2.min(text.len()), "");
+                        return Some((Some(s), Some(e)));
+                    }
+                }
+            }
+        }
+        search = pos + marker.len();
+    }
+    None
 }
 
 /// A time token being stripped drags a preceding "at " out with it —
@@ -1166,7 +1220,10 @@ fn try_extract_month_name_date(text: &mut String) -> Option<DateToken> {
 
 const RELATIVE_DAYS: &[(&str, i64)] = &[
     ("послезавтра", 2), ("завтра", 1), ("сегодня", 0),
-    ("tomorrow", 1), ("today", 0),
+    // Multi-word first: plain "tomorrow" must not eat its own phrase.
+    ("day after tomorrow", 2),
+    ("tomorrow", 1), ("tmrw", 1), ("tmr", 1),
+    ("today", 0), ("tonight", 0),
 ];
 
 fn try_extract_relative_date(text: &mut String) -> Option<DateToken> {
@@ -1533,6 +1590,40 @@ mod tests {
         let r4 = parse_input("jam 5pm-7");
         assert_eq!(r4.start_time, Some(17 * 60));
         assert_eq!(r4.end_time, Some(19 * 60));
+    }
+
+    #[test]
+    fn test_english_from_to() {
+        // The English «с X до Y». Bare hours stay literal, like the Russian.
+        let r = parse_input("focus from 12 to 16");
+        assert_eq!(r.start_time, Some(12 * 60));
+        assert_eq!(r.end_time, Some(16 * 60));
+        assert_eq!(r.clean_title, "focus");
+        // A meridiem colors the range by the dash-range rules.
+        let r2 = parse_input("shift from 9 to 5pm");
+        assert_eq!(r2.start_time, Some(9 * 60));
+        assert_eq!(r2.end_time, Some(17 * 60));
+        // Crossing midnight, start-side meridiem only.
+        let r3 = parse_input("party from 11pm to 2");
+        assert_eq!(r3.start_time, Some(23 * 60));
+        assert_eq!(r3.end_time, Some(26 * 60));
+        // Full HH:MM on both sides.
+        let r4 = parse_input("from 5:30 to 6:15 rehearsal");
+        assert_eq!(r4.start_time, Some(330));
+        assert_eq!(r4.end_time, Some(375));
+        assert_eq!(r4.clean_title, "rehearsal");
+    }
+
+    #[test]
+    fn test_english_slang_days() {
+        assert_eq!(parse_input("call mom tmr").date, Some(DateToken::Offset(1)));
+        let r0 = parse_input("gym tmrw 9am");
+        assert_eq!(r0.date, Some(DateToken::Offset(1)));
+        assert_eq!(r0.start_time, Some(9 * 60));
+        assert_eq!(parse_input("finish it tonight").date, Some(DateToken::Offset(0)));
+        let r = parse_input("dentist day after tomorrow");
+        assert_eq!(r.date, Some(DateToken::Offset(2)));
+        assert_eq!(r.clean_title, "dentist");
     }
 
     #[test]
