@@ -1,0 +1,78 @@
+# ============================================================================
+# Slate - one-shot installer build.
+#   Rust core -> obfuscated Flutter release -> stage VC++ runtime ->
+#   Inno Setup -> Releases\Slate_Setup_v<ver>.exe
+# Version is read from pubspec.yaml (single source). Run from anywhere.
+# NOTE: kept pure ASCII on purpose - PowerShell 5.1 reads a BOM-less .ps1 as
+# ANSI, so box-drawing / em-dash chars corrupt the parse.
+# ============================================================================
+$ErrorActionPreference = 'Stop'
+$root = Split-Path $PSScriptRoot -Parent   # project root (tools\ is one level down)
+
+function Step($n) { Write-Host "`n=== $n ===" -ForegroundColor Cyan }
+
+# -- Version from pubspec (1.1.3+12 -> 1.1.3) --------------------------------
+$verLine = Select-String -Path "$root\pubspec.yaml" -Pattern '^version:\s*(.+)$' | Select-Object -First 1
+if (-not $verLine) { throw "version: not found in pubspec.yaml" }
+$version = ($verLine.Matches[0].Groups[1].Value.Trim() -split '\+')[0]
+Write-Host "Slate version: $version" -ForegroundColor White
+
+# -- ISCC (Inno Setup) location ----------------------------------------------
+$iscc = @(
+  "$env:LocalAppData\Programs\Inno Setup 6\ISCC.exe",
+  "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+  "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) { throw "ISCC.exe not found. Install: winget install JRSoftware.InnoSetup" }
+Write-Host "ISCC: $iscc" -ForegroundColor White
+
+# -- 1. Rust core (release) + DLL to project root (the DLL law) ---------------
+Step "1/5  Rust core (cargo build --release)"
+Push-Location "$root\native"
+cargo build --release
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "cargo build failed" }
+Pop-Location
+Copy-Item "$root\native\target\release\slate_core.dll" "$root\slate_core.dll" -Force
+Write-Host "  slate_core.dll -> project root" -ForegroundColor Green
+
+# -- 2. Flutter release, obfuscated (public-build law from DEPLOYS.md) --------
+Step "2/5  flutter build windows --release --obfuscate"
+$symbols = "$root\symbols\v$version"
+New-Item -ItemType Directory -Path $symbols -Force | Out-Null
+Push-Location $root
+& flutter build windows --release --obfuscate --split-debug-info="symbols\v$version"
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "flutter build failed" }
+Pop-Location
+$release = "$root\build\windows\x64\runner\Release"
+if (-not (Test-Path "$release\slate.exe")) { throw "release build missing: $release\slate.exe" }
+Write-Host "  keep symbols\v$version (tester crash logs need it)" -ForegroundColor Green
+
+# -- 3. Stage app-local VC++ runtime next to slate.exe -----------------------
+Step "3/5  Stage VC++ runtime (app-local)"
+$vc = @('msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll')
+foreach ($d in $vc) {
+  $srcSys = Join-Path $env:SystemRoot "System32\$d"
+  if (Test-Path $srcSys) {
+    Copy-Item $srcSys (Join-Path $release $d) -Force
+    Write-Host "  + $d" -ForegroundColor Green
+  } else {
+    Write-Warning "  $d NOT FOUND in System32. Clean tester machines may fail to launch; install the VC++ 2015-2022 x64 redist on this build machine."
+  }
+}
+
+# -- 4. Compile the installer ------------------------------------------------
+Step "4/5  Inno Setup (ISCC)"
+& $iscc "/DMyAppVersion=$version" "$root\installer\slate.iss"
+if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+$setup = "$root\Releases\Slate_Setup_v$version.exe"
+if (-not (Test-Path $setup)) { throw "installer not produced: $setup" }
+
+# -- 5. Done -----------------------------------------------------------------
+Step "5/5  Done"
+$mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
+Write-Host "  OUTPUT: $setup  ($mb MB)" -ForegroundColor Green
+Write-Host ""
+Write-Host "NEXT: run the setup through https://www.virustotal.com before sharing." -ForegroundColor Yellow
+Write-Host "      (global hotkey + HKCU autostart + DLLs look like spyware to AV heuristics;" -ForegroundColor Yellow
+Write-Host "       submit free false-positive reports to any vendor that flags it.)" -ForegroundColor Yellow
+Write-Host "      Unsigned: testers see SmartScreen, use 'More info' then 'Run anyway'." -ForegroundColor Yellow

@@ -12,6 +12,18 @@ and the `symbols\v<ver>` folder is KEPT (git-ignored, never deleted) — without
 tester crash logs are unreadable. The Rust DLL is already stripped (`strip=true`).
 Local/dev deploys may skip obfuscation; the DEPLOYS line must then say so.
 
+Installer (added 2026-07-21): testers get `Releases\Slate_Setup_v<ver>.exe`, built by
+`tools\build_installer.ps1` (Rust + obfuscated release + app-local VC++ runtime +
+Inno Setup `installer\slate.iss`). Per-user (`%LocalAppData%\Kael\Slate`), no admin,
+publisher **Kael**, fixed AppId `{1F4B13C7-…}` for in-place upgrades. NOT code-signed
+(no cert — SmartScreen wall stands; wave-0 uses "More info → Run anyway"). The
+installer taskkills `slate.exe` before install/uninstall (window-close only hides to
+tray), and uninstall clears the HKCU\Run `Slate` value while leaving user data.
+
+| Installer | Date | Commit | Artifact | Verified |
+|-----------|------|--------|----------|----------|
+| 1.1.3 | 2026-07-21 | (this commit) | Releases\Slate_Setup_v1.1.3.exe (13.7 MB) | Built + contents verified from ISCC log (slate.exe, all plugin DLLs, msvcp140/vcruntime140/vcruntime140_1, slate_core.dll, data\ incl app.so+icudtl+flutter_assets). exe/setup metadata = Kael/Slate/1.1.3; new Kael icon embedded in exe (honey stroke). **LIVE install/launch/uninstall NOT run** — would taskkill the user's live Slate + drop a 2nd copy on his machine (he chose testers-only). Run on a clean account/VM, or after quitting the live tray Slate, to confirm end-to-end. NOT signed → VirusTotal + SmartScreen instruction still pending before wave 1. |
+
 | Version | Date | Commit | Folder | Marker verified |
 |---------|------|--------|--------|-----------------|
 | 1.0.0 | 2026-07-09 | pre-git | Releases\slate_v1.0.0 | — |
