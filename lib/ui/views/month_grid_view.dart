@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import '../../core/theme/app_theme.dart';
@@ -485,7 +486,8 @@ class _MonthPage extends StatefulWidget {
   State<_MonthPage> createState() => _MonthPageState();
 }
 
-class _MonthPageState extends State<_MonthPage> {
+class _MonthPageState extends State<_MonthPage>
+    with SingleTickerProviderStateMixin {
   int _hoveredIndex = -1;
 
   // The cell whose full day is opened as a floating layer, or -1. A month cell
@@ -494,22 +496,50 @@ class _MonthPageState extends State<_MonthPage> {
   // pile opens the whole day over its neighbours; grabbing a card folds it away
   // again, so the reach-in affordance is gone the instant it has served.
   int _expandedIndex = -1;
+  // The cell the popover is being PAINTED for — held one extra beat while the
+  // close animation plays, so the panel eases out instead of snapping away.
+  int _openIndex = -1;
+
+  // Drives the open/close of the popover. Forward = unfold from the cell; the
+  // reverse plays before the layer is removed. Curved per direction so it grows
+  // with a soft settle and folds away a touch quicker.
+  late final AnimationController _expandCtl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 240),
+    reverseDuration: const Duration(milliseconds: 190),
+  );
+  late final Animation<double> _expand = CurvedAnimation(
+    parent: _expandCtl,
+    curve: Curves.easeOutCubic,
+    reverseCurve: Curves.easeInCubic,
+  );
 
   @override
   void initState() {
     super.initState();
     DragSession.instance.addListener(_onDragPhase);
+    _expandCtl.addStatusListener((s) {
+      // Once folded shut, drop the painted layer.
+      if (s == AnimationStatus.dismissed && mounted) {
+        setState(() => _openIndex = -1);
+      }
+    });
   }
 
-  // Two jobs, both driven by the session rather than by mouse events: the cells
-  // make room for the rail at lift, and the hover revives at drop — a drag
-  // ending under a motionless cursor produces no mouse event at all.
-  // Single door for the open state so the shared paging-freeze flag can never
-  // drift from what is on screen.
+  // Single door for the open state so the shared paging-freeze flag, the painted
+  // layer and the animation can never drift apart.
   void _setExpanded(int idx) {
     if (_expandedIndex == idx) return;
-    setState(() => _expandedIndex = idx);
+    _expandedIndex = idx;
     widget.dayOpen.value = idx != -1;
+    if (idx != -1) {
+      setState(() => _openIndex = idx);
+      _expandCtl.forward(from: 0);
+    } else {
+      // Keep painting the old day through the fold-away; the status listener
+      // clears _openIndex when the reverse lands.
+      _expandCtl.reverse();
+    }
   }
 
   void _onDragPhase() {
@@ -517,8 +547,7 @@ class _MonthPageState extends State<_MonthPage> {
     // A lift folds the expanded day away — you reached in, took the card, and
     // the month is clean underneath to drop it anywhere.
     if (_expandedIndex != -1 && DragSession.hoverSuppressed) {
-      _expandedIndex = -1;
-      widget.dayOpen.value = false;
+      _setExpanded(-1);
     }
     setState(() {});
   }
@@ -528,9 +557,11 @@ class _MonthPageState extends State<_MonthPage> {
   @override
   void didUpdateWidget(_MonthPage old) {
     super.didUpdateWidget(old);
-    // Paging to another month drops any open day.
-    if (old.viewMonth != widget.viewMonth && _expandedIndex != -1) {
+    // Paging to another month drops any open day at once (no fold-out).
+    if (old.viewMonth != widget.viewMonth && _openIndex != -1) {
       _expandedIndex = -1;
+      _openIndex = -1;
+      _expandCtl.value = 0;
       widget.dayOpen.value = false;
     }
   }
@@ -538,6 +569,7 @@ class _MonthPageState extends State<_MonthPage> {
   @override
   void dispose() {
     DragSession.instance.removeListener(_onDragPhase);
+    _expandCtl.dispose();
     // Never leave paging frozen behind a disposed page.
     if (_expandedIndex != -1) widget.dayOpen.value = false;
     super.dispose();
@@ -632,9 +664,10 @@ class _MonthPageState extends State<_MonthPage> {
           );
 
           // The opened day floats above the grid in the SAME coordinate space,
-          // so its panel lines up with the cell it grew from.
-          final exDayIndex = _expandedIndex - leadingSlots;
-          final expanded = _expandedIndex >= 0 &&
+          // so its panel lines up with the cell it grew from. Painted for
+          // _openIndex (held through the fold-away), not _expandedIndex.
+          final exDayIndex = _openIndex - leadingSlots;
+          final expanded = _openIndex >= 0 &&
                   exDayIndex >= 0 &&
                   exDayIndex < daysInMonth
               ? DateTime(
@@ -645,25 +678,32 @@ class _MonthPageState extends State<_MonthPage> {
             clipBehavior: Clip.none,
             children: [
               grid,
-              if (expanded != null) ...[
-                // Click-away closes it. A whisper scrim lifts the panel off the
-                // grid and says "this is the thing now" without shouting.
-                Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _collapse,
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween(begin: 0, end: 1),
-                      duration: const Duration(milliseconds: 140),
-                      curve: Curves.easeOut,
-                      builder: (_, v, _) => ColoredBox(
-                          color: Colors.black.withValues(alpha: 0.28 * v)),
-                    ),
-                  ),
+              if (expanded != null)
+                AnimatedBuilder(
+                  animation: _expand,
+                  builder: (context, _) {
+                    final t = _expand.value.clamp(0.0, 1.0);
+                    return Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        // Click-away closes it. A whisper scrim lifts the panel
+                        // off the grid — it fades with the same curve, so open
+                        // and close feel like one gesture.
+                        Positioned.fill(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _collapse,
+                            child: ColoredBox(
+                                color:
+                                    Colors.black.withValues(alpha: 0.28 * t)),
+                          ),
+                        ),
+                        _expandedDayLayer(expanded, _openIndex, leadingSlots,
+                            cellW, cellH, h, t),
+                      ],
+                    );
+                  },
                 ),
-                _expandedDayLayer(
-                    expanded, _expandedIndex, leadingSlots, cellW, cellH, h),
-              ],
             ],
           );
         }),
@@ -674,7 +714,7 @@ class _MonthPageState extends State<_MonthPage> {
   /// to the cell it grew from and kept fully on-screen. Purely a reach-in
   /// affordance — grabbing a card folds it away (see [_onDragPhase]).
   Widget _expandedDayLayer(DateTime date, int gridIndex, int leadingSlots,
-      double cellW, double cellH, double gridH) {
+      double cellW, double cellH, double gridH, double t) {
     final col = gridIndex % 7;
     final row = gridIndex ~/ 7;
     final left = col * (cellW + 3);
@@ -717,27 +757,23 @@ class _MonthPageState extends State<_MonthPage> {
         // stay on-screen, floating over the rows above.
         final panelTop = top.clamp(0.0, (gridH - panelH).clamp(0.0, gridH));
 
+        // Grows from the cell's top edge with a soft settle, driven by the
+        // shared open/close controller so the fold-away runs in reverse.
         return Positioned(
           left: left,
           top: panelTop,
           width: cellW,
           height: panelH,
-          child: TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0, end: 1),
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeOutCubic,
-            builder: (_, v, child) => Opacity(
-              opacity: v,
-              child: Transform.scale(
-                scale: 0.97 + 0.03 * v,
-                alignment: Alignment.topCenter,
-                // §7: filterQuality non-null WHILE scaling, null at rest, or the
-                // titles hop a pixel on the last frame.
-                filterQuality: v < 1.0 ? FilterQuality.low : null,
-                child: child,
-              ),
+          child: Opacity(
+            opacity: t,
+            child: Transform.scale(
+              scale: 0.94 + 0.06 * t,
+              alignment: Alignment.topCenter,
+              // §7: filterQuality non-null WHILE scaling, null at rest, or the
+              // titles hop a pixel on the last frame.
+              filterQuality: t < 1.0 ? FilterQuality.low : null,
+              child: _ExpandedDayCard(date: date, rows: rows),
             ),
-            child: _ExpandedDayCard(date: date, rows: rows),
           ),
         );
       },
@@ -793,25 +829,77 @@ class _MonthPageState extends State<_MonthPage> {
         ),
       );
 
-  /// The month cell's task rows: timed → divider → untimed, capped at 2, with
-  /// the live drop preview spliced into its group ("show the future" — the card
-  /// lands where it will land, with or without its time; no wash, no badge).
+  /// The month cell's task area: the rows (timed → divider → untimed) stepping
+  /// aside for the "Anytime" rail, with «+N more» floated into the bottom-right
+  /// corner as a button — an overlay, so it costs no row and two cards stay
+  /// whole. It stays a SettleAnchor, so a drop that sorts below the cap still
+  /// dissolves into it.
   Widget _buildMonthTaskList(List<RustTask> dayTasks, DateTime date,
-      GlobalKey dividerKey, int gridIndex, double availH) {
+      GlobalKey dividerKey, int gridIndex, double availH,
+      ValueListenable<double> railInset) {
     return ValueListenableBuilder<DropHover?>(
       valueListenable: DragSession.instance.hover,
       builder: (context, _, _) {
         return ValueListenableBuilder<Set<String>>(
           valueListenable: DeleteSettle.deleting,
-          builder: (context, dying, _) => _monthTaskColumn(
-              dayTasks, date, dividerKey, dying, gridIndex, availH),
+          builder: (context, dying, _) {
+            final (cards, hiddenCount) =
+                _monthTaskColumn(dayTasks, date, dividerKey, dying, availH);
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned.fill(
+                  child: ClipRect(
+                    // Bottom rows slide under this clip; the corner button is
+                    // OUTSIDE it, so it is never the thing that gets cut.
+                    child: ValueListenableBuilder<double>(
+                      valueListenable: railInset,
+                      builder: (_, inset, child) => TweenAnimationBuilder<double>(
+                        tween: Tween<double>(end: inset),
+                        duration: const Duration(milliseconds: 180),
+                        curve: Curves.easeOutCubic,
+                        builder: (_, v, c) =>
+                            Transform.translate(offset: Offset(0, v), child: c),
+                        child: child,
+                      ),
+                      child: SingleChildScrollView(
+                        physics: const NeverScrollableScrollPhysics(),
+                        child: cards,
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 2,
+                  bottom: 1,
+                  child: IgnorePointer(
+                    ignoring: hiddenCount == 0,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      opacity: hiddenCount > 0 ? 1.0 : 0.0,
+                      child: hiddenCount > 0
+                          ? SettleAnchor(
+                              id: DragCardRegistry.pileId(date),
+                              child: _MoreChip(
+                                count: hiddenCount,
+                                onTap: () => _setExpanded(gridIndex),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
         );
       },
     );
   }
 
-  Widget _monthTaskColumn(List<RustTask> dayTasks, DateTime date,
-      GlobalKey dividerKey, Set<String> dying, int gridIndex, double availH) {
+  (Widget, int) _monthTaskColumn(List<RustTask> dayTasks, DateTime date,
+      GlobalKey dividerKey, Set<String> dying, double availH) {
         final preview = DropFuture.forDate(date);
         // Keep the dragged card in the list (it dims + restores itself and stays
         // in DragCardRegistry so the flight lands on it). Splice the honey
@@ -844,24 +932,17 @@ class _MonthPageState extends State<_MonthPage> {
         final dyingHere = [...allocated, ...unallocated].where(isDying).length;
         final total = unallocated.length + allocated.length - dyingHere;
 
-        // Measure the cap from the real cell height instead of hardcoding 2 —
-        // exactly what the week column does. A fixed 2 clipped the «+N more»
-        // line off short cells (a card is ~40px, and a 6-row month leaves the
-        // task area barely two cards tall), so the day became a dead end. When
-        // there is overflow, reserve a row for the label so it is ALWAYS shown.
-        const rowH = 40.0, moreH = 16.0, dividerH = 13.0;
+        // «+N more» is a CORNER OVERLAY now, not a row — so it costs no height
+        // and the cards keep the full area. Always show at least TWO (what the
+        // cell always showed before it started measuring — the last may clip a
+        // few px at the floor, exactly as before), and MORE where a taller cell
+        // has room. The divider between groups eats one slot when both show.
+        const rowH = 38.0, dividerH = 13.0;
         final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
+        final floor2 = total < 2 ? total : 2;
         var fit = ((availH - (bothGroups ? dividerH : 0)) / rowH)
             .floor()
-            .clamp(0, total);
-        if (fit < total) {
-          fit = ((availH - moreH - (bothGroups ? dividerH : 0)) / rowH)
-              .floor()
-              .clamp(0, total);
-        }
-        // At least one card whenever a single row fits — never "+N more" over an
-        // empty cell while there is room to show something.
-        if (total > 0 && fit == 0 && availH >= rowH) fit = 1;
+            .clamp(floor2, total == 0 ? 0 : total);
         // The incoming card must always be visible during a drag.
         if (showPreview) fit = (fit + 1).clamp(0, total);
         final cap = fit;
@@ -901,42 +982,17 @@ class _MonthPageState extends State<_MonthPage> {
 
         // AnimatedSize: the promoted card GLIDES into the freed slot instead of
         // snapping (manifest §7 — collapse + fade, the rest pulls up smoothly).
-        return AnimatedSize(
+        // Cards ONLY — «+N more» is placed by the caller as a corner overlay.
+        final cards = AnimatedSize(
           duration: const Duration(milliseconds: 160),
           curve: Curves.easeOut,
           alignment: Alignment.topCenter,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ...items,
-              // Keyed so it stays a LABEL (unkeyed, Flutter reconciled it with a
-              // card by position and the survivor "grew out of" it), and faded
-              // so it crosses with the promoted card instead of being cut out.
-              // Tappable when it holds anything: opens the whole day as a
-              // floating layer so a hidden task can be reached and dragged out.
-              // When empty it ignores the pointer so the invisible label never
-              // eats a tap meant for the cell.
-              IgnorePointer(
-                key: const ValueKey('more'),
-                ignoring: hiddenCount == 0,
-                child: SettleAnchor(
-                  id: DragCardRegistry.pileId(date),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 160),
-                    curve: Curves.easeOut,
-                    opacity: hiddenCount > 0 ? 1.0 : 0.0,
-                    child: hiddenCount > 0
-                        ? _MoreChip(
-                            count: hiddenCount,
-                            onTap: () => _setExpanded(gridIndex),
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-                ),
-              ),
-            ],
+            children: items,
           ),
         );
+        return (cards, hiddenCount);
   }
 
   Widget _buildDayCell(int gridIndex, int day, DateTime date, bool isToday,
@@ -1086,39 +1142,18 @@ class _MonthPageState extends State<_MonthPage> {
                           Expanded(
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 5),
-                              // Measure the real room: the card cap is chosen to
-                              // fit, and to always leave a line for «+N more».
-                              // A hardcoded 2 clipped that line off short cells,
-                              // so the day looked like a dead end — two tasks and
-                              // no way to reach the rest.
+                              // Measure the real room so the card cap fits it —
+                              // «+N more» is a corner overlay inside, costing no
+                              // row, so two cards stay whole even on short cells.
                               child: LayoutBuilder(
-                                builder: (context, listBox) => ClipRect(
-                                // Steps aside for the "Anytime" rail exactly
-                                // like the week column does. Bottom rows slide
-                                // under this ClipRect — fine: mid-drag they are
-                                // the "+N more" region, which says nothing.
-                                child: ValueListenableBuilder<double>(
-                                  valueListenable: railInset,
-                                  builder: (_, inset, child) =>
-                                      TweenAnimationBuilder<double>(
-                                    tween: Tween<double>(end: inset),
-                                    duration: const Duration(milliseconds: 180),
-                                    curve: Curves.easeOutCubic,
-                                    builder: (_, v, c) => Transform.translate(
-                                      offset: Offset(0, v),
-                                      child: c,
-                                    ),
-                                    child: child,
-                                  ),
-                                  child: SingleChildScrollView(
-                                    physics:
-                                        const NeverScrollableScrollPhysics(),
-                                    child: _buildMonthTaskList(dayTasks, date,
-                                        dividerKey, gridIndex, listBox.maxHeight),
-                                  ),
-                                ),
+                                builder: (context, listBox) => _buildMonthTaskList(
+                                    dayTasks,
+                                    date,
+                                    dividerKey,
+                                    gridIndex,
+                                    listBox.maxHeight,
+                                    railInset),
                               ),
-                            ),
                             ),
                           ),
                         ] else
@@ -1374,10 +1409,16 @@ class _MoreChipState extends State<_MoreChip> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(6),
-            color: Colors.white.withValues(alpha: _hover ? 0.07 : 0.0),
+            borderRadius: BorderRadius.circular(7),
+            // A dark pill cuts the chip out from the card corner it floats over,
+            // so the count stays legible; hover lifts it a touch further.
+            color: Colors.black.withValues(alpha: _hover ? 0.55 : 0.35),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: _hover ? 0.20 : 0.08),
+              width: 0.5,
+            ),
           ),
           child: Text(
             '+${widget.count} more',
@@ -1385,7 +1426,7 @@ class _MoreChipState extends State<_MoreChip> {
               fontFamily: 'Inter',
               fontSize: 8.5,
               fontWeight: FontWeight.w500,
-              color: Colors.white.withValues(alpha: _hover ? 0.65 : 0.30),
+              color: Colors.white.withValues(alpha: _hover ? 0.85 : 0.45),
             ),
           ),
         ),

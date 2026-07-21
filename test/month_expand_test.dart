@@ -112,13 +112,10 @@ void main() {
         reason: 'the reach-in affordance is gone once it has served');
   });
 
-  testWidgets('the «+N more» line is never clipped off a short cell',
+  testWidgets('the «+N more» button sits inside the cell, in the corner',
       (tester) async {
-    // The bug: a hardcoded cap of 2 cards had no idea how tall the cell was.
-    // On a short month (6 rows, small window) two ~40px cards overran the task
-    // area and the «+N more» line below them clipped — the user saw two tasks
-    // and no way to reach the rest. The cap now measures the room and always
-    // keeps a row for the label.
+    // «+N more» is a bottom-right corner overlay now, so it costs no row (two
+    // cards stay whole) and can never clip off below the cell floor.
     tester.view.physicalSize = const Size(900, 600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -148,9 +145,41 @@ void main() {
     final moreRect = tester.getRect(more);
     final cellRect = tester.getRect(cell);
     expect(moreRect.bottom, lessThanOrEqualTo(cellRect.bottom + 0.5),
-        reason: 'the «+N more» label falls inside its cell, not under it');
-    expect(find.textContaining('more'), findsOneWidget,
-        reason: 'exactly one overflow line, and it is reachable');
+        reason: 'the «+N more» button falls inside its cell, not under it');
+    // Bottom-right corner: to the right of the cell's midline.
+    expect(moreRect.center.dx, greaterThan(cellRect.center.dx),
+        reason: 'it lives in the corner, not centred');
+  });
+
+  testWidgets('a cell shows at least two cards, not one', (tester) async {
+    // The regression: measuring the cap and reserving a label row dropped the
+    // cell to a SINGLE card. With «+N more» moved to the corner, the cards keep
+    // the full height and the cap floors at two — what the cell always showed.
+    tester.view.physicalSize = const Size(1100, 850);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final d = DateTime(now.year, now.month, now.day == 9 ? 10 : 9);
+    final ms = d.millisecondsSinceEpoch;
+    for (var i = 0; i < 6; i++) {
+      await ts.createTask('two-$i', ms);
+    }
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: MonthGridView(core: ts.core, taskState: ts, onDayTap: (_) {}),
+      ),
+    ));
+    await pumpFrames(tester);
+
+    // The two freshest are BOTH on screen (a single-card cell would hide the
+    // second), and the rest are behind the pile.
+    expect(find.text('two-5'), findsOneWidget);
+    expect(find.text('two-4'), findsOneWidget,
+        reason: 'the second card is visible — not just one');
+    expect(find.textContaining('more'), findsOneWidget);
   });
 
   testWidgets('the opened day groups timed and untimed under labels',
