@@ -478,6 +478,13 @@ class _MonthPage extends StatefulWidget {
 class _MonthPageState extends State<_MonthPage> {
   int _hoveredIndex = -1;
 
+  // The cell whose full day is opened as a floating layer, or -1. A month cell
+  // shows two rows and hides the rest behind «+N more»; without this a hidden
+  // task could only be reached by hunting for it in the week view. Tapping the
+  // pile opens the whole day over its neighbours; grabbing a card folds it away
+  // again, so the reach-in affordance is gone the instant it has served.
+  int _expandedIndex = -1;
+
   @override
   void initState() {
     super.initState();
@@ -488,7 +495,24 @@ class _MonthPageState extends State<_MonthPage> {
   // make room for the rail at lift, and the hover revives at drop — a drag
   // ending under a motionless cursor produces no mouse event at all.
   void _onDragPhase() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    // A lift folds the expanded day away — you reached in, took the card, and
+    // the month is clean underneath to drop it anywhere.
+    if (_expandedIndex != -1 && DragSession.hoverSuppressed) {
+      _expandedIndex = -1;
+    }
+    setState(() {});
+  }
+
+  void _collapse() {
+    if (_expandedIndex != -1) setState(() => _expandedIndex = -1);
+  }
+
+  @override
+  void didUpdateWidget(_MonthPage old) {
+    super.didUpdateWidget(old);
+    // Paging to another month drops any open day.
+    if (old.viewMonth != widget.viewMonth) _expandedIndex = -1;
   }
 
   @override
@@ -532,7 +556,7 @@ class _MonthPageState extends State<_MonthPage> {
           // transition. Slack means the sampled edge is padding, not a card.
           final cellH = ((h - (rows - 1) * 3) / rows).floorToDouble();
 
-          return GridView.builder(
+          final grid = GridView.builder(
             physics: const NeverScrollableScrollPhysics(),
             // Nothing to clip: never scrollable, and the rows are sized to fit
             // with slack. No clip = no edge to sample across.
@@ -584,7 +608,103 @@ class _MonthPageState extends State<_MonthPage> {
               );
             },
           );
+
+          // The opened day floats above the grid in the SAME coordinate space,
+          // so its panel lines up with the cell it grew from.
+          final exDayIndex = _expandedIndex - leadingSlots;
+          final expanded = _expandedIndex >= 0 &&
+                  exDayIndex >= 0 &&
+                  exDayIndex < daysInMonth
+              ? DateTime(
+                  widget.viewMonth.year, widget.viewMonth.month, exDayIndex + 1)
+              : null;
+
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              grid,
+              if (expanded != null) ...[
+                // Click-away closes it. A whisper scrim lifts the panel off the
+                // grid and says "this is the thing now" without shouting.
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _collapse,
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween(begin: 0, end: 1),
+                      duration: const Duration(milliseconds: 140),
+                      curve: Curves.easeOut,
+                      builder: (_, v, _) => ColoredBox(
+                          color: Colors.black.withValues(alpha: 0.28 * v)),
+                    ),
+                  ),
+                ),
+                _expandedDayLayer(
+                    expanded, _expandedIndex, leadingSlots, cellW, cellH, h),
+              ],
+            ],
+          );
         }),
+    );
+  }
+
+  /// The floating "opened day": the whole day's tasks, each draggable, anchored
+  /// to the cell it grew from and kept fully on-screen. Purely a reach-in
+  /// affordance — grabbing a card folds it away (see [_onDragPhase]).
+  Widget _expandedDayLayer(DateTime date, int gridIndex, int leadingSlots,
+      double cellW, double cellH, double gridH) {
+    final col = gridIndex % 7;
+    final row = gridIndex ~/ 7;
+    final left = col * (cellW + 3);
+    final top = row * (cellH + 3);
+
+    return ValueListenableBuilder<List<RustTask>>(
+      valueListenable: widget.taskState!
+          .tasksForDateNotifier(date.millisecondsSinceEpoch),
+      builder: (context, dayTasks, _) {
+        final allocated = dayTasks.where((t) => t.startTime != null).toList()
+          ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
+        final unallocated = TaskState.orderUnallocated(
+            dayTasks.where((t) => t.startTime == null).toList());
+        final ordered = [...allocated, ...unallocated];
+
+        // Height from content, floored to the cell and capped to the grid so it
+        // never runs off; if the day is long the list scrolls inside.
+        const headerH = 30.0, rowH = 30.0, vPad = 14.0;
+        final desired = headerH + ordered.length * rowH + vPad;
+        final maxH = gridH - 8;
+        final panelH = desired.clamp(cellH, maxH).toDouble();
+        // Prefer to grow down from the cell; near the bottom it shifts up to
+        // stay on-screen, floating over the rows above.
+        final panelTop = top.clamp(0.0, (gridH - panelH).clamp(0.0, gridH));
+
+        return Positioned(
+          left: left,
+          top: panelTop,
+          width: cellW,
+          height: panelH,
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: 1),
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOutCubic,
+            builder: (_, v, child) => Opacity(
+              opacity: v,
+              child: Transform.scale(
+                scale: 0.97 + 0.03 * v,
+                alignment: Alignment.topCenter,
+                // §7: filterQuality non-null WHILE scaling, null at rest, or the
+                // titles hop a pixel on the last frame.
+                filterQuality: v < 1.0 ? FilterQuality.low : null,
+                child: child,
+              ),
+            ),
+            child: _ExpandedDayCard(
+              date: date,
+              rows: [for (final t in ordered) _dragCard(t, date)],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -610,25 +730,52 @@ class _MonthPageState extends State<_MonthPage> {
     );
   }
 
+  /// One draggable task row — the same in a cell and in an opened day, so a card
+  /// lifted from either behaves identically. KEY by task id: without it the
+  /// Column reconciles by POSITION, so deleting the top of two made the survivor
+  /// reuse the deleted card's dying element and vanish until a full rebuild.
+  Widget _dragCard(RustTask task, DateTime date) => Padding(
+        key: ValueKey('m-${task.id}'),
+        padding: const EdgeInsets.only(bottom: 2),
+        child: DragSource(
+          task: task,
+          kind: DragSourceKind.dayCellCard,
+          sourceDay: date,
+          sourceInsets: const EdgeInsets.only(bottom: 4),
+          child: HoverTaskCard(
+            task: task,
+            compact: true,
+            enablePeek: false,
+            onTap: () {
+              widget.onToggleTask?.call(task);
+              setState(() {});
+            },
+            onDelete: () => widget.taskState?.deleteTask(task),
+            onEditTitle: (val) =>
+                widget.taskState?.updateTask(task.copyWith(title: val)),
+          ),
+        ),
+      );
+
   /// The month cell's task rows: timed → divider → untimed, capped at 2, with
   /// the live drop preview spliced into its group ("show the future" — the card
   /// lands where it will land, with or without its time; no wash, no badge).
-  Widget _buildMonthTaskList(
-      List<RustTask> dayTasks, DateTime date, GlobalKey dividerKey) {
+  Widget _buildMonthTaskList(List<RustTask> dayTasks, DateTime date,
+      GlobalKey dividerKey, int gridIndex) {
     return ValueListenableBuilder<DropHover?>(
       valueListenable: DragSession.instance.hover,
       builder: (context, _, _) {
         return ValueListenableBuilder<Set<String>>(
           valueListenable: DeleteSettle.deleting,
           builder: (context, dying, _) =>
-              _monthTaskColumn(dayTasks, date, dividerKey, dying),
+              _monthTaskColumn(dayTasks, date, dividerKey, dying, gridIndex),
         );
       },
     );
   }
 
   Widget _monthTaskColumn(List<RustTask> dayTasks, DateTime date,
-      GlobalKey dividerKey, Set<String> dying) {
+      GlobalKey dividerKey, Set<String> dying, int gridIndex) {
         final preview = DropFuture.forDate(date);
         // Keep the dragged card in the list (it dims + restores itself and stays
         // in DragCardRegistry so the flight lands on it). Splice the honey
@@ -667,36 +814,9 @@ class _MonthPageState extends State<_MonthPage> {
         bool isPreview(RustTask t) =>
             showPreview && identical(t, preview.projected);
 
-        // KEY by task id — without it the Column reconciles by POSITION, so
-        // deleting the top of two made the survivor reuse the deleted card's
-        // dying (fading) element and vanish with it until a full rebuild (a
-        // screen switch). The week list was already keyed; the month wasn't.
-        Widget realCard(RustTask task) => Padding(
-              key: ValueKey('m-${task.id}'),
-              padding: const EdgeInsets.only(bottom: 2),
-              child: DragSource(
-                task: task,
-                kind: DragSourceKind.dayCellCard,
-                sourceDay: date,
-                sourceInsets: const EdgeInsets.only(bottom: 4),
-                child: HoverTaskCard(
-                  task: task,
-                  compact: true,
-                  enablePeek: false,
-                  onTap: () {
-                    widget.onToggleTask?.call(task);
-                    setState(() {});
-                  },
-                  onDelete: () => widget.taskState?.deleteTask(task),
-                  onEditTitle: (val) =>
-                      widget.taskState?.updateTask(task.copyWith(title: val)),
-                ),
-              ),
-            );
-
         Widget emit(RustTask t) => isPreview(t)
             ? preview!.card(margin: const EdgeInsets.only(bottom: 2))
-            : realCard(t);
+            : _dragCard(t, date);
 
         final items = <Widget>[];
         var count = 0;
@@ -737,24 +857,35 @@ class _MonthPageState extends State<_MonthPage> {
               // Keyed so it stays a LABEL (unkeyed, Flutter reconciled it with a
               // card by position and the survivor "grew out of" it), and faded
               // so it crosses with the promoted card instead of being cut out.
+              // Tappable when it holds anything: opens the whole day as a
+              // floating layer so a hidden task can be reached and dragged out.
+              // When empty it ignores the pointer so the invisible label never
+              // eats a tap meant for the cell.
               IgnorePointer(
                 key: const ValueKey('more'),
-                child: SettleAnchor(
-                  id: DragCardRegistry.pileId(date),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 160),
-                    curve: Curves.easeOut,
-                    opacity: hiddenCount > 0 ? 1.0 : 0.0,
-                    child: hiddenCount > 0
-                        ? Text(
-                            '+$hiddenCount more',
-                            style: TextStyle(
-                              fontFamily: 'Inter',
-                              fontSize: 8.5,
-                              color: Colors.white.withOpacity(0.22),
-                            ),
-                          )
-                        : const SizedBox.shrink(),
+                ignoring: hiddenCount == 0,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: hiddenCount > 0
+                      ? () => setState(() => _expandedIndex = gridIndex)
+                      : null,
+                  child: SettleAnchor(
+                    id: DragCardRegistry.pileId(date),
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      opacity: hiddenCount > 0 ? 1.0 : 0.0,
+                      child: hiddenCount > 0
+                          ? Text(
+                              '+$hiddenCount more',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 8.5,
+                                color: Colors.white.withOpacity(0.30),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
                   ),
                 ),
               ),
@@ -932,7 +1063,7 @@ class _MonthPageState extends State<_MonthPage> {
                                     physics:
                                         const NeverScrollableScrollPhysics(),
                                     child: _buildMonthTaskList(
-                                        dayTasks, date, dividerKey),
+                                        dayTasks, date, dividerKey, gridIndex),
                                   ),
                                 ),
                               ),
@@ -1079,6 +1210,87 @@ class _PremiumMiniDivider extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPANDED DAY — the whole day, lifted off the grid so a hidden task is reachable
+// ═══════════════════════════════════════════════════════════════════════════
+class _ExpandedDayCard extends StatelessWidget {
+  final DateTime date;
+  final List<Widget> rows;
+  const _ExpandedDayCard({required this.date, required this.rows});
+
+  static const _weekdays = [
+    'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN' //
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(AppTheme.radiusXLarge),
+        // Opaque, a touch above the cell's own fill, so the rows beneath never
+        // read through it.
+        color: const Color(0xFF20232C),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.45),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 9, 6, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 5, bottom: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text(
+                    '${date.day}',
+                    style: const TextStyle(
+                      fontFamily: 'InterTight',
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                      height: 1.0,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _weekdays[date.weekday - 1],
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 8.5,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1.0,
+                      color: Colors.white.withValues(alpha: 0.30),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: rows,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
