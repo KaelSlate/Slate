@@ -761,21 +761,21 @@ class _MonthPageState extends State<_MonthPage> {
   /// the live drop preview spliced into its group ("show the future" — the card
   /// lands where it will land, with or without its time; no wash, no badge).
   Widget _buildMonthTaskList(List<RustTask> dayTasks, DateTime date,
-      GlobalKey dividerKey, int gridIndex) {
+      GlobalKey dividerKey, int gridIndex, double availH) {
     return ValueListenableBuilder<DropHover?>(
       valueListenable: DragSession.instance.hover,
       builder: (context, _, _) {
         return ValueListenableBuilder<Set<String>>(
           valueListenable: DeleteSettle.deleting,
-          builder: (context, dying, _) =>
-              _monthTaskColumn(dayTasks, date, dividerKey, dying, gridIndex),
+          builder: (context, dying, _) => _monthTaskColumn(
+              dayTasks, date, dividerKey, dying, gridIndex, availH),
         );
       },
     );
   }
 
   Widget _monthTaskColumn(List<RustTask> dayTasks, DateTime date,
-      GlobalKey dividerKey, Set<String> dying, int gridIndex) {
+      GlobalKey dividerKey, Set<String> dying, int gridIndex, double availH) {
         final preview = DropFuture.forDate(date);
         // Keep the dragged card in the list (it dims + restores itself and stays
         // in DragCardRegistry so the flight lands on it). Splice the honey
@@ -807,9 +807,28 @@ class _MonthPageState extends State<_MonthPage> {
         bool isDying(RustTask t) => dying.contains(t.id);
         final dyingHere = [...allocated, ...unallocated].where(isDying).length;
         final total = unallocated.length + allocated.length - dyingHere;
-        // The rail floats over the rows and never displaces them, so the cap is
-        // untouched by the drag.
-        final cap = showPreview ? 3 : 2;
+
+        // Measure the cap from the real cell height instead of hardcoding 2 —
+        // exactly what the week column does. A fixed 2 clipped the «+N more»
+        // line off short cells (a card is ~40px, and a 6-row month leaves the
+        // task area barely two cards tall), so the day became a dead end. When
+        // there is overflow, reserve a row for the label so it is ALWAYS shown.
+        const rowH = 40.0, moreH = 16.0, dividerH = 13.0;
+        final bothGroups = unallocated.isNotEmpty && allocated.isNotEmpty;
+        var fit = ((availH - (bothGroups ? dividerH : 0)) / rowH)
+            .floor()
+            .clamp(0, total);
+        if (fit < total) {
+          fit = ((availH - moreH - (bothGroups ? dividerH : 0)) / rowH)
+              .floor()
+              .clamp(0, total);
+        }
+        // At least one card whenever a single row fits — never "+N more" over an
+        // empty cell while there is room to show something.
+        if (total > 0 && fit == 0 && availH >= rowH) fit = 1;
+        // The incoming card must always be visible during a drag.
+        if (showPreview) fit = (fit + 1).clamp(0, total);
+        final cap = fit;
 
         bool isPreview(RustTask t) =>
             showPreview && identical(t, preview.projected);
@@ -1041,7 +1060,13 @@ class _MonthPageState extends State<_MonthPage> {
                           Expanded(
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 5),
-                              child: ClipRect(
+                              // Measure the real room: the card cap is chosen to
+                              // fit, and to always leave a line for «+N more».
+                              // A hardcoded 2 clipped that line off short cells,
+                              // so the day looked like a dead end — two tasks and
+                              // no way to reach the rest.
+                              child: LayoutBuilder(
+                                builder: (context, listBox) => ClipRect(
                                 // Steps aside for the "Anytime" rail exactly
                                 // like the week column does. Bottom rows slide
                                 // under this ClipRect — fine: mid-drag they are
@@ -1062,11 +1087,12 @@ class _MonthPageState extends State<_MonthPage> {
                                   child: SingleChildScrollView(
                                     physics:
                                         const NeverScrollableScrollPhysics(),
-                                    child: _buildMonthTaskList(
-                                        dayTasks, date, dividerKey, gridIndex),
+                                    child: _buildMonthTaskList(dayTasks, date,
+                                        dividerKey, gridIndex, listBox.maxHeight),
                                   ),
                                 ),
                               ),
+                            ),
                             ),
                           ),
                         ] else

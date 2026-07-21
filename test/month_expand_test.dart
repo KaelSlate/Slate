@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:slate/core/state/task_state.dart';
 import 'package:slate/ui/views/month_grid_view.dart';
+import 'package:slate/ui/widgets/day_cell_drop_target.dart';
 
 /// Reaching a task the month cell hides behind «+N more».
 ///
@@ -45,6 +46,18 @@ void main() {
     ts = TaskState();
     while (!ts.loaded) {
       await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    // Start from a clean store so no stray task overflows another day.
+    for (final t in List.of(ts.tasks)) {
+      ts.deleteTask(t);
+    }
+  });
+
+  // Each test starts from an empty month — otherwise a prior test's overflow day
+  // leaves a second «+N more» in the grid.
+  tearDown(() {
+    for (final t in List.of(ts.tasks)) {
+      ts.deleteTask(t);
     }
   });
 
@@ -97,5 +110,46 @@ void main() {
 
     expect(find.text('mtask-0'), findsNothing,
         reason: 'the reach-in affordance is gone once it has served');
+  });
+
+  testWidgets('the «+N more» line is never clipped off a short cell',
+      (tester) async {
+    // The bug: a hardcoded cap of 2 cards had no idea how tall the cell was.
+    // On a short month (6 rows, small window) two ~40px cards overran the task
+    // area and the «+N more» line below them clipped — the user saw two tasks
+    // and no way to reach the rest. The cap now measures the room and always
+    // keeps a row for the label.
+    tester.view.physicalSize = const Size(900, 600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final d = DateTime(now.year, now.month, now.day == 18 ? 19 : 18);
+    final ms = d.millisecondsSinceEpoch;
+    for (var i = 0; i < 5; i++) {
+      await ts.createTask('short-$i', ms);
+    }
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: MonthGridView(core: ts.core, taskState: ts, onDayTap: (_) {}),
+      ),
+    ));
+    await pumpFrames(tester);
+
+    final more = find.textContaining('more');
+    expect(more, findsOneWidget, reason: 'the overflow line must be present');
+
+    // Its own cell — the label must sit WITHIN it, not clipped below its floor.
+    final cell = find.ancestor(
+        of: more, matching: find.byType(DayCellDropTarget));
+    expect(cell, findsOneWidget);
+    final moreRect = tester.getRect(more);
+    final cellRect = tester.getRect(cell);
+    expect(moreRect.bottom, lessThanOrEqualTo(cellRect.bottom + 0.5),
+        reason: 'the «+N more» label falls inside its cell, not under it');
+    expect(find.textContaining('more'), findsOneWidget,
+        reason: 'exactly one overflow line, and it is reachable');
   });
 }
