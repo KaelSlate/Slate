@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,13 @@ class DesktopScrollWrapper extends StatefulWidget {
   final double scrollMultiplier;
   final int baseDurationMs;
 
+  /// While this reads true the wheel is ignored, so a modal layer above the
+  /// child (the month's opened-day popover) can own the scroll instead of the
+  /// month paging under it. This handler acts synchronously and never touches
+  /// the pointer-signal resolver, so a descendant cannot starve it — the gate
+  /// has to live here.
+  final ValueListenable<bool>? paused;
+
   const DesktopScrollWrapper({
     super.key,
     this.scrollController,
@@ -16,6 +24,7 @@ class DesktopScrollWrapper extends StatefulWidget {
     required this.child,
     this.scrollMultiplier = 1.0,
     this.baseDurationMs = 400,
+    this.paused,
   }) : assert(
          scrollController != null || pageController != null,
          'Provide either scrollController or pageController',
@@ -42,6 +51,7 @@ class _DesktopScrollWrapperState extends State<DesktopScrollWrapper> {
 
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
+    if (widget.paused?.value ?? false) return; // a modal layer owns the wheel
     if (HardwareKeyboard.instance.isControlPressed) return;
 
     final dy = event.scrollDelta.dy;

@@ -58,6 +58,9 @@ class _MonthGridViewState extends State<MonthGridView> {
 
   late final PageController _pageController;
   final ValueNotifier<int> _monthOffset = ValueNotifier(0);
+  // True while a page has a day opened — freezes month paging so the popover
+  // owns the wheel. A page writes it; the DesktopScrollWrapper above reads it.
+  final ValueNotifier<bool> _dayOpen = ValueNotifier(false);
 
   // Tracks the last scroll delta to detect new increments from keyboard
   int _lastScrollDelta = 0;
@@ -217,6 +220,7 @@ class _MonthGridViewState extends State<MonthGridView> {
     widget.scrollDeltaNotifier?.removeListener(_onScrollDelta);
     _pageController.dispose();
     _monthOffset.dispose();
+    _dayOpen.dispose();
     super.dispose();
   }
 
@@ -265,6 +269,7 @@ class _MonthGridViewState extends State<MonthGridView> {
               child: DesktopScrollWrapper(
                 pageController: _pageController,
                 baseDurationMs: 400, // Ускорили для уверенного финиша
+                paused: _dayOpen, // an opened day owns the wheel
                 child: PageView.builder(
                   controller: _pageController,
                   scrollDirection: Axis.vertical,
@@ -304,6 +309,7 @@ class _MonthGridViewState extends State<MonthGridView> {
                             viewMonth: month,
                             core: widget.core,
                             taskState: widget.taskState,
+                            dayOpen: _dayOpen,
                             onDayTap: widget.onDayTap,
                             onDayHover: widget.onDayHover,
                             onDayAdd: widget.onDayAdd,
@@ -454,6 +460,9 @@ class _MonthPage extends StatefulWidget {
   final DateTime viewMonth;
   final SlateCore core;
   final TaskState? taskState;
+  // Shared with the parent's DesktopScrollWrapper: this page sets it true while
+  // a day is opened so month paging freezes.
+  final ValueNotifier<bool> dayOpen;
   final ValueChanged<DateTime> onDayTap;
   final ValueChanged<DateTime?>? onDayHover;
   final ValueChanged<DateTime>? onDayAdd;
@@ -464,6 +473,7 @@ class _MonthPage extends StatefulWidget {
     required this.viewMonth,
     required this.core,
     this.taskState,
+    required this.dayOpen,
     required this.onDayTap,
     this.onDayHover,
     this.onDayAdd,
@@ -494,30 +504,42 @@ class _MonthPageState extends State<_MonthPage> {
   // Two jobs, both driven by the session rather than by mouse events: the cells
   // make room for the rail at lift, and the hover revives at drop — a drag
   // ending under a motionless cursor produces no mouse event at all.
+  // Single door for the open state so the shared paging-freeze flag can never
+  // drift from what is on screen.
+  void _setExpanded(int idx) {
+    if (_expandedIndex == idx) return;
+    setState(() => _expandedIndex = idx);
+    widget.dayOpen.value = idx != -1;
+  }
+
   void _onDragPhase() {
     if (!mounted) return;
     // A lift folds the expanded day away — you reached in, took the card, and
     // the month is clean underneath to drop it anywhere.
     if (_expandedIndex != -1 && DragSession.hoverSuppressed) {
       _expandedIndex = -1;
+      widget.dayOpen.value = false;
     }
     setState(() {});
   }
 
-  void _collapse() {
-    if (_expandedIndex != -1) setState(() => _expandedIndex = -1);
-  }
+  void _collapse() => _setExpanded(-1);
 
   @override
   void didUpdateWidget(_MonthPage old) {
     super.didUpdateWidget(old);
     // Paging to another month drops any open day.
-    if (old.viewMonth != widget.viewMonth) _expandedIndex = -1;
+    if (old.viewMonth != widget.viewMonth && _expandedIndex != -1) {
+      _expandedIndex = -1;
+      widget.dayOpen.value = false;
+    }
   }
 
   @override
   void dispose() {
     DragSession.instance.removeListener(_onDragPhase);
+    // Never leave paging frozen behind a disposed page.
+    if (_expandedIndex != -1) widget.dayOpen.value = false;
     super.dispose();
   }
 
@@ -666,12 +688,29 @@ class _MonthPageState extends State<_MonthPage> {
           ..sort((a, b) => (a.startTime ?? 0).compareTo(b.startTime ?? 0));
         final unallocated = TaskState.orderUnallocated(
             dayTasks.where((t) => t.startTime == null).toList());
-        final ordered = [...allocated, ...unallocated];
+
+        // Grouped and labelled — timed under SCHEDULED (each carries its 09:30),
+        // untimed under ANYTIME. No count: the opened day shows everything, so a
+        // denominator is just noise (and, per the compass, a whiff of debt).
+        final rows = <Widget>[];
+        var sections = 0;
+        if (allocated.isNotEmpty) {
+          rows.add(const _ExpandedSectionLabel('SCHEDULED'));
+          rows.addAll(allocated.map((t) => _dragCard(t, date)));
+          sections++;
+        }
+        if (unallocated.isNotEmpty) {
+          rows.add(const _ExpandedSectionLabel('ANYTIME'));
+          rows.addAll(unallocated.map((t) => _dragCard(t, date)));
+          sections++;
+        }
+        final taskCount = allocated.length + unallocated.length;
 
         // Height from content, floored to the cell and capped to the grid so it
         // never runs off; if the day is long the list scrolls inside.
-        const headerH = 30.0, rowH = 30.0, vPad = 14.0;
-        final desired = headerH + ordered.length * rowH + vPad;
+        const headerH = 30.0, rowH = 30.0, labelH = 22.0, vPad = 14.0;
+        final desired =
+            headerH + taskCount * rowH + sections * labelH + vPad;
         final maxH = gridH - 8;
         final panelH = desired.clamp(cellH, maxH).toDouble();
         // Prefer to grow down from the cell; near the bottom it shifts up to
@@ -698,10 +737,7 @@ class _MonthPageState extends State<_MonthPage> {
                 child: child,
               ),
             ),
-            child: _ExpandedDayCard(
-              date: date,
-              rows: [for (final t in ordered) _dragCard(t, date)],
-            ),
+            child: _ExpandedDayCard(date: date, rows: rows),
           ),
         );
       },
@@ -883,28 +919,18 @@ class _MonthPageState extends State<_MonthPage> {
               IgnorePointer(
                 key: const ValueKey('more'),
                 ignoring: hiddenCount == 0,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: hiddenCount > 0
-                      ? () => setState(() => _expandedIndex = gridIndex)
-                      : null,
-                  child: SettleAnchor(
-                    id: DragCardRegistry.pileId(date),
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 160),
-                      curve: Curves.easeOut,
-                      opacity: hiddenCount > 0 ? 1.0 : 0.0,
-                      child: hiddenCount > 0
-                          ? Text(
-                              '+$hiddenCount more',
-                              style: TextStyle(
-                                fontFamily: 'Inter',
-                                fontSize: 8.5,
-                                color: Colors.white.withOpacity(0.30),
-                              ),
-                            )
-                          : const SizedBox.shrink(),
-                    ),
+                child: SettleAnchor(
+                  id: DragCardRegistry.pileId(date),
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOut,
+                    opacity: hiddenCount > 0 ? 1.0 : 0.0,
+                    child: hiddenCount > 0
+                        ? _MoreChip(
+                            count: hiddenCount,
+                            onTap: () => _setExpanded(gridIndex),
+                          )
+                        : const SizedBox.shrink(),
                   ),
                 ),
               ),
@@ -1316,6 +1342,76 @@ class _ExpandedDayCard extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The «+N more» pile as a button. It reads as clickable on hover — a brighter
+/// label on a soft pill — without a cursor change (manifest §7: the cursor stays
+/// basic everywhere; the affordance is visual). Its own tap opens the day.
+class _MoreChip extends StatefulWidget {
+  final int count;
+  final VoidCallback onTap;
+  const _MoreChip({required this.count, required this.onTap});
+
+  @override
+  State<_MoreChip> createState() => _MoreChipState();
+}
+
+class _MoreChipState extends State<_MoreChip> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(6),
+            color: Colors.white.withValues(alpha: _hover ? 0.07 : 0.0),
+          ),
+          child: Text(
+            '+${widget.count} more',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 8.5,
+              fontWeight: FontWeight.w500,
+              color: Colors.white.withValues(alpha: _hover ? 0.65 : 0.30),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// SCHEDULED / ANYTIME header inside the opened day — the day view's vocabulary,
+/// so the whole app names the two groups the same way.
+class _ExpandedSectionLabel extends StatelessWidget {
+  final String label;
+  const _ExpandedSectionLabel(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 3, top: 8, bottom: 3),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontFamily: 'Inter',
+          fontSize: 8.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.2,
+          color: Colors.white.withValues(alpha: 0.30),
         ),
       ),
     );

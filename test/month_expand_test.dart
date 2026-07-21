@@ -152,4 +152,43 @@ void main() {
     expect(find.textContaining('more'), findsOneWidget,
         reason: 'exactly one overflow line, and it is reachable');
   });
+
+  testWidgets('the opened day groups timed and untimed under labels',
+      (tester) async {
+    tester.view.physicalSize = const Size(1100, 850);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final d = DateTime(now.year, now.month, now.day == 11 ? 12 : 11);
+    final ms = d.millisecondsSinceEpoch;
+
+    // Enough to overflow the cell, mixing timed and untimed.
+    for (var i = 0; i < 3; i++) {
+      await ts.createTask('am-$i', ms); // untimed
+    }
+    for (var i = 0; i < 3; i++) {
+      await ts.createTask('timed-$i', ms);
+      final t = ts.tasks.firstWhere((x) => x.title == 'timed-$i');
+      ts.scheduleAt(t, d, 540 + i * 60, 600 + i * 60); // 09:00, 10:00, 11:00
+    }
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: MonthGridView(core: ts.core, taskState: ts, onDayTap: (_) {}),
+      ),
+    ));
+    await pumpFrames(tester);
+
+    await tester.tap(find.textContaining('more'));
+    await pumpFrames(tester);
+
+    // Both group heads are present, and a timed card shows its hour — the
+    // sections are labelled, not one flat pile.
+    expect(find.text('SCHEDULED'), findsOneWidget);
+    expect(find.text('ANYTIME'), findsOneWidget);
+    expect(find.text('09:00'), findsWidgets,
+        reason: 'a timed card carries its time in the opened day');
+  });
 }
