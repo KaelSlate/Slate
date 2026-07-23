@@ -43,11 +43,19 @@ class PillWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  // Show the window when its size no longer matches the screen it is about to
+  // appear on (a resolution switch, a monitor hotplug). The engine only adopts
+  // a resize while it is presenting, so this wakes it first.
+  void ShowAtHealedSize(const RECT& work, int width, int height);
+  // Timer-driven tail of that heal: nudge the size, then play the entrance.
+  void StepHeal();
+
   flutter::DartProject project_;
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
   std::function<void(const flutter::EncodableValue&)> capture_sink_;
   HWND prior_foreground_ = nullptr;  // app to restore focus to on dismiss
+  int heal_phase_ = 0;               // 0 idle, 1 nudge due, 2 entrance due
 };
 
 #endif  // RUNNER_PILL_WINDOW_H_

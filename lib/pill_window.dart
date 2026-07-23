@@ -15,7 +15,8 @@ import 'ui/widgets/smart_day_input.dart';
 /// maximize desync, no taskbar flash — the whole rounds 1-8 class is gone).
 ///
 /// Native <-> pill talk over the `slate/pill` channel:
-///   native -> dart : `reveal`  (window just shown → clear + play entrance + focus)
+///   native -> dart : `warmup`  (start presenting frames — see _warmup)
+///                    `reveal`  (window just shown → clear + play entrance + focus)
 ///   dart -> native : `capture` (serialized ParseResult → main isolate creates it)
 ///                    `dismiss` (hide the window, hand focus back)
 const _channel = MethodChannel('slate/pill');
@@ -59,6 +60,7 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
   final SlateCore _core = SlateCore(); // parse only — no engine/DB in this isolate
   late final AnimationController _enter;
   late final AnimationController _exit;
+  late final AnimationController _warm;
   bool _leaving = false;
 
   // ── The rapid-dump lesson, owned here ─────────────────────────────────────
@@ -79,6 +81,8 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
     _enter = AnimationController(vsync: this, lowerBound: 0.0, upperBound: 1.2);
     _exit = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 170));
+    _warm = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 300));
     _channel.setMethodCallHandler(_onNative);
     HardwareKeyboard.instance.addHandler(_keyHandler);
   }
@@ -88,6 +92,7 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
     HardwareKeyboard.instance.removeHandler(_keyHandler);
     _enter.dispose();
     _exit.dispose();
+    _warm.dispose();
     _focusNode.dispose();
     _notifier.dispose();
     super.dispose();
@@ -95,7 +100,21 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
 
   Future<dynamic> _onNative(MethodCall call) async {
     if (call.method == 'reveal') _reveal();
+    if (call.method == 'warmup') _warmup();
     return null;
+  }
+
+  /// The display changed size while this window sat hidden, so the runner is
+  /// about to resize it — but a resize is only picked up by an engine that is
+  /// PRESENTING. Between summons nothing animates here, so the engine is idle
+  /// and would keep its old viewport: that is the pill-stretched-in-a-corner
+  /// bug. Ticking this controller keeps frames flowing while every pixel stays
+  /// transparent, so the resize lands and the user sees nothing at all.
+  void _warmup() {
+    _leaving = false;
+    _exit.value = 0.0;
+    _enter.value = 0.0;
+    _warm.forward(from: 0.0);
   }
 
   /// Window was just shown by the runner: reset to a clean pill and play the
@@ -169,6 +188,16 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
       onTap: _dismiss,
       child: Stack(
         children: [
+          // Paints nothing anyone can see; it exists so the engine keeps
+          // presenting frames during _warmup (see above).
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _warm,
+              builder: (context, _) => ColoredBox(
+                color: Colors.black.withValues(alpha: 0.002 * _warm.value),
+              ),
+            ),
+          ),
           // Whisper scrim over the desktop — focuses the eye on the pill, fades
           // with the entrance/exit. Same weight as before.
           Positioned.fill(
