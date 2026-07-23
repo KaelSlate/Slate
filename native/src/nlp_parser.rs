@@ -605,8 +605,9 @@ fn try_extract_russian_at(text: &mut String) -> Option<(Option<i64>, Option<i64>
     let lower = text.to_lowercase();
 
     // ── Pass 1: Try prefixed patterns "на N" / "в N [часов|часа|час]" ──────────
-    // "с " is intentionally excluded — it's ambiguous (means "from" not "at")
-    let prefixes: &[&str] = &["на ", "в "];
+    // "с " is intentionally excluded — it's ambiguous (means "from" not "at").
+    // Ukrainian says «о 15» / «об 11»; "об " must be tried before the shorter "о ".
+    let prefixes: &[&str] = &["на ", "в ", "об ", "о "];
 
     for prefix in prefixes {
         let plen = prefix.len();
@@ -633,10 +634,10 @@ fn try_extract_russian_at(text: &mut String) -> Option<(Option<i64>, Option<i64>
                     continue;
                 }
 
-                // Check for optional "часов/часа/час" suffix
+                // Check for optional "часов/часа/час" (UA "годині/години/година") suffix
                 let remaining_after_num = rest[consumed_len..].trim_start();
                 let mut extra_consumed = 0usize;
-                for suffix in &["часов", "часа", "час"] {
+                for suffix in &["часов", "часа", "час", "годині", "години", "година", "годин"] {
                     if remaining_after_num.starts_with(suffix) {
                         let whitespace_len = rest[consumed_len..].len() - remaining_after_num.len();
                         extra_consumed = whitespace_len + suffix.len();
@@ -658,7 +659,7 @@ fn try_extract_russian_at(text: &mut String) -> Option<(Option<i64>, Option<i64>
 
     // ── Pass 2: Bare "N часов/часа/час" without a preposition ───────────────
     // e.g. "встреча 9 часов" → 09:00
-    let bare_suffixes: &[&str] = &["часов", "часа", "час"];
+    let bare_suffixes: &[&str] = &["часов", "часа", "час", "годині", "години", "година", "годин"];
     for suffix in bare_suffixes {
         if let Some(suf_pos) = lower.find(suffix) {
             // Look backward for a trailing decimal number before the suffix
@@ -1072,8 +1073,8 @@ fn try_extract_in_days(text: &mut String) -> Option<DateToken> {
             (v as i64, l)
         } else if tail.starts_with("a ") || tail == "a" {
             (1, 1)
-        } else if tail.starts_with("неделю") {
-            (1, 0) // «через неделю» — unit carries the 1
+        } else if tail.starts_with("неделю") || tail.starts_with("тиждень") {
+            (1, 0) // «через неделю» / «через тиждень» — unit carries the 1
         } else {
             continue;
         };
@@ -1086,8 +1087,10 @@ fn try_extract_in_days(text: &mut String) -> Option<DateToken> {
         let unit_start = num_start + num_len + unit_ws;
         let unit_tail = &lower[unit_start..];
 
-        let day_units = ["дней", "дня", "день", "days", "day"];
-        let week_units = ["недель", "недели", "неделю", "weeks", "week"];
+        let day_units = ["дней", "дня", "день", "днів", "дні", "days", "day"];
+        let week_units = [
+            "недель", "недели", "неделю", "тижнів", "тижні", "тиждень", "weeks", "week",
+        ];
         let mut matched: Option<(usize, i64)> = None;
         for u in &day_units {
             if unit_tail.starts_with(u) && is_boundary_after(&lower, unit_start + u.len()) {
@@ -1183,6 +1186,9 @@ fn parse_numeric_date_at(bytes: &[u8], pos: usize) -> Option<(i64, i64, i64, usi
 const MONTH_NAMES: &[(&str, i64)] = &[
     ("января", 1), ("февраля", 2), ("марта", 3), ("апреля", 4), ("мая", 5), ("июня", 6),
     ("июля", 7), ("августа", 8), ("сентября", 9), ("октября", 10), ("ноября", 11), ("декабря", 12),
+    // Ukrainian (genitive, as used in «15 січня»).
+    ("січня", 1), ("лютого", 2), ("березня", 3), ("квітня", 4), ("травня", 5), ("червня", 6),
+    ("липня", 7), ("серпня", 8), ("вересня", 9), ("жовтня", 10), ("листопада", 11), ("грудня", 12),
     ("january", 1), ("february", 2), ("march", 3), ("april", 4), ("june", 6), ("july", 7),
     ("august", 8), ("september", 9), ("october", 10), ("november", 11), ("december", 12),
     ("jan", 1), ("feb", 2), ("mar", 3), ("apr", 4), ("may", 5), ("jun", 6), ("jul", 7),
@@ -1193,7 +1199,7 @@ const MONTH_NAMES: &[(&str, i64)] = &[
 /// «в 15.07», «on jul 12». Extend the match leftward over that word so it does
 /// not survive in the title. Returns the (possibly earlier) start byte.
 fn consume_date_prefix(lower: &str, start: usize) -> usize {
-    for p in &["на ", "в ", "on "] {
+    for p in &["на ", "в ", "у ", "on "] {
         if start >= p.len() && lower[..start].ends_with(p) {
             let cand = start - p.len();
             if cand == 0 || lower.as_bytes()[cand - 1].is_ascii_whitespace() {
@@ -1252,7 +1258,10 @@ fn try_extract_month_name_date(text: &mut String) -> Option<DateToken> {
 }
 
 const RELATIVE_DAYS: &[(&str, i64)] = &[
-    ("послезавтра", 2), ("завтра", 1), ("сегодня", 0),
+    // Longest first: «послезавтра»/«післязавтра» must not be eaten by «завтра»
+    // («завтра» is spelled the same in Russian and Ukrainian).
+    ("послезавтра", 2), ("післязавтра", 2), ("завтра", 1),
+    ("сегодня", 0), ("сьогодні", 0),
     // Multi-word first: plain "tomorrow" must not eat its own phrase.
     ("day after tomorrow", 2),
     ("tomorrow", 1), ("tmrw", 1), ("tmr", 1),
@@ -1270,13 +1279,21 @@ fn try_extract_relative_date(text: &mut String) -> Option<DateToken> {
     None
 }
 
-/// (name, ISO weekday, requires «в»/«во»/«on» prefix). «среда/среду» and «ср»
+/// (name, ISO weekday, requires «в»/«во»/«у»/«on» prefix). «среда/среду» and «ср»
 /// double as ordinary Russian words, so they only count with a preposition.
+/// Ukrainian names are unambiguous, so they never need one.
 const WEEKDAYS: &[(&str, i64, bool)] = &[
     ("понедельник", 1, false), ("вторник", 2, false),
     ("среду", 3, true), ("среда", 3, true),
     ("четверг", 4, false), ("пятницу", 5, false), ("пятница", 5, false),
     ("субботу", 6, false), ("суббота", 6, false), ("воскресенье", 7, false),
+    // Ukrainian. Both apostrophe forms of «п'ятниця» — users type either.
+    ("понеділок", 1, false), ("вівторок", 2, false),
+    ("середу", 3, false), ("середа", 3, false), ("четвер", 4, false),
+    ("п'ятницю", 5, false), ("п'ятниця", 5, false),
+    ("п’ятницю", 5, false), ("п’ятниця", 5, false),
+    ("суботу", 6, false), ("субота", 6, false),
+    ("неділю", 7, false), ("неділя", 7, false),
     ("monday", 1, false), ("tuesday", 2, false), ("wednesday", 3, false),
     ("thursday", 4, false), ("friday", 5, false), ("saturday", 6, false), ("sunday", 7, false),
     ("пн", 1, false), ("вт", 2, false), ("ср", 3, true), ("чт", 4, false),
@@ -1293,7 +1310,7 @@ fn try_extract_weekday(text: &mut String) -> Option<DateToken> {
         let end = pos + name.len();
 
         let mut remove_start = pos;
-        for prefix in &["во ", "в ", "on "] {
+        for prefix in &["во ", "в ", "у ", "on "] {
             let head = &lower[..pos];
             if head.ends_with(prefix) {
                 let pstart = pos - prefix.len();
@@ -1798,6 +1815,39 @@ mod tests {
     fn test_date_word_boundaries() {
         assert_eq!(parse_input("завтрак с командой").date, None);
         assert_eq!(parse_input("отправить письмо").date, None);
+    }
+
+    #[test]
+    fn test_ukrainian() {
+        // Relative days — «завтра» is shared with Russian, the rest are not.
+        assert_eq!(parse_input("зустріч сьогодні").date, Some(DateToken::Offset(0)));
+        assert_eq!(parse_input("здати післязавтра").date, Some(DateToken::Offset(2)));
+        // Weekdays, with and without the Ukrainian «у» preposition.
+        assert_eq!(parse_input("тренування у п'ятницю").date, Some(DateToken::Weekday(5)));
+        assert_eq!(parse_input("тренування у п’ятницю").date, Some(DateToken::Weekday(5)));
+        assert_eq!(parse_input("дзвінок у вівторок").date, Some(DateToken::Weekday(2)));
+        assert_eq!(parse_input("зал понеділок").date, Some(DateToken::Weekday(1)));
+        assert_eq!(parse_input("покупки в неділю").date, Some(DateToken::Weekday(7)));
+        // «четвер» must not be swallowed by the Russian «четверг».
+        assert_eq!(parse_input("зустріч у четвер").date, Some(DateToken::Weekday(4)));
+        // Month names.
+        assert_eq!(parse_input("дедлайн 15 січня").date, Some(DateToken::Explicit(0, 1, 15)));
+        assert_eq!(parse_input("відпустка 20 липня").date, Some(DateToken::Explicit(0, 7, 20)));
+        // Durations.
+        assert_eq!(parse_input("здати через 3 дні").date, Some(DateToken::Offset(3)));
+        assert_eq!(parse_input("через тиждень відпустка").date, Some(DateToken::Offset(7)));
+        assert_eq!(parse_input("реліз через 2 тижні").date, Some(DateToken::Offset(14)));
+        // Time with the Ukrainian «о»/«об» prepositions.
+        assert_eq!(parse_input("зустріч о 15").start_time, Some(900));
+        assert_eq!(parse_input("дзвінок об 11").start_time, Some(660));
+        assert_eq!(parse_input("тренування о 18 годині").start_time, Some(1080));
+        // Full phrase: date + time together, title left clean.
+        let r = parse_input("тренування завтра о 18");
+        assert_eq!(r.date, Some(DateToken::Offset(1)));
+        assert_eq!(r.start_time, Some(1080));
+        assert_eq!(r.clean_title, "тренування");
+        // Ordinary words must not become dates.
+        assert_eq!(parse_input("про 5 хвилин подумати").date, None);
     }
 
     #[test]
