@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slate — a local day planner for Windows</title>
+<meta name="description" content="A fast, local day planner for Windows. Hit a hotkey anywhere, type what's on your mind — it reads the time and drops onto your timeline. No cloud, no account, no subscription.">
+<meta name="theme-color" content="#14100C">
+
+<!-- Link previews (X, Telegram, Reddit, Discord) -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Slate — a local day planner for Windows">
+<meta property="og:description" content="Breathe out a thought. Watch it land on your day. Native Windows, fully offline, no subscription, no AI running your schedule.">
+<meta property="og:site_name" content="Slate">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Slate — a local day planner for Windows">
+<meta name="twitter:description" content="Breathe out a thought. Watch it land on your day. Native Windows, fully offline, no subscription.">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2314100C'/%3E%3Cpath d='M4 15 C 8 15, 10 5, 20 6' stroke='%23E8B24A' stroke-width='3.2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+
+<style>
+  :root {
+    /* Warm graphite + honey — carried from the app's own design system. */
+    --ground: #14100C;
+    --ground-2: #1B1610;
+    --surface: #221B14;
+    --surface-2: #2B2319;
+    --ink: #EFE8DC;
+    --ink-soft: #B4A895;
+    --ink-faint: #837767;
+    --honey: #E8B24A;
+    --honey-deep: #C8892E;
+    --line: rgba(239,232,220,0.10);
+    --line-strong: rgba(239,232,220,0.18);
+    --shadow: rgba(0,0,0,0.45);
+    --grain: 0.035;
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    --mono: "Cascadia Code", "Cascadia Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  /* The brand lives in warm dark (a pro tool you sit in for hours) — but the
+     app also has a warm-paper editorial side, so light = cream, not a bleach. */
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #F2EBDD; --ground-2: #ECE3D2; --surface: #FAF6EE; --surface-2: #F4EEE1;
+      --ink: #241D14; --ink-soft: #6A6051; --ink-faint: #9A8E7B;
+      --honey: #B27C22; --honey-deep: #8F5E14;
+      --line: rgba(36,29,20,0.12); --line-strong: rgba(36,29,20,0.20);
+      --shadow: rgba(60,45,20,0.14); --grain: 0.02;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 17px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    opacity: var(--grain);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .wrap { position: relative; z-index: 1; max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+
+  a { color: inherit; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.74rem; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--honey);
+  }
+  h1, h2, h3 { font-family: var(--serif); font-weight: 500; text-wrap: balance; letter-spacing: -0.01em; }
+
+  header {
+    position: relative; z-index: 2;
+    display: flex; align-items: center; justify-content: space-between;
+    max-width: 1120px; margin: 0 auto; padding: 22px 28px;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; font-family: var(--serif); font-size: 1.32rem; letter-spacing: 0.01em; }
+  .mark { width: 30px; height: 30px; border-radius: 8px; background: var(--ground-2); border: 1px solid var(--line-strong); display: grid; place-items: center; box-shadow: 0 2px 8px var(--shadow); }
+  .nav-cta {
+    font-family: var(--sans); font-size: 0.92rem; text-decoration: none;
+    padding: 8px 16px; border-radius: 9px; border: 1px solid var(--line-strong);
+    color: var(--ink); transition: border-color .2s, background .2s;
+  }
+  .nav-cta:hover { border-color: var(--honey); }
+
+  .hero { padding: 44px 0 20px; display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 54px; align-items: center; }
+  .hero-copy h1 { font-size: clamp(2.5rem, 5.2vw, 4.1rem); line-height: 1.04; margin: 16px 0 0; }
+  .hero-copy h1 em { font-style: italic; color: var(--honey); }
+  .lede { color: var(--ink-soft); font-size: 1.16rem; line-height: 1.6; margin: 22px 0 0; max-width: 34ch; }
+  .cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 34px; }
+  .btn {
+    font-family: var(--sans); font-size: 1rem; font-weight: 600; text-decoration: none;
+    padding: 14px 24px; border-radius: 11px; display: inline-flex; align-items: center; gap: 10px;
+    background: linear-gradient(180deg, var(--honey), var(--honey-deep));
+    color: #201607; border: none; box-shadow: 0 8px 24px rgba(232,178,74,0.26);
+    transition: transform .15s, box-shadow .2s;
+  }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 12px 30px rgba(232,178,74,0.34); }
+  .btn small { font-weight: 500; opacity: .72; }
+  .btn-ghost { text-decoration: none; color: var(--ink-soft); font-size: 0.98rem; border-bottom: 1px solid var(--line-strong); padding-bottom: 2px; transition: color .2s, border-color .2s; }
+  .btn-ghost:hover { color: var(--ink); border-color: var(--honey); }
+  .fineprint { margin-top: 18px; font-size: 0.85rem; color: var(--ink-faint); max-width: 40ch; }
+  .fineprint b { color: var(--ink-soft); font-weight: 600; }
+
+  .demo { position: relative; }
+  .chord { display: flex; align-items: center; gap: 9px; justify-content: center; margin-bottom: 16px; font-family: var(--mono); }
+  .cap {
+    font-size: 0.82rem; padding: 7px 13px; border-radius: 8px; color: var(--ink);
+    background: var(--surface-2); border: 1px solid var(--line-strong);
+    box-shadow: 0 3px 0 var(--ground), 0 5px 10px var(--shadow); transition: transform .12s, box-shadow .12s, border-color .2s, color .2s;
+  }
+  .chord.press .cap { transform: translateY(2px); box-shadow: 0 1px 0 var(--ground), 0 2px 6px var(--shadow); border-color: var(--honey); color: var(--honey); }
+  .chord .plus { color: var(--ink-faint); font-size: 0.8rem; }
+
+  .panel {
+    background: linear-gradient(180deg, var(--surface), var(--ground-2));
+    border: 1px solid var(--line-strong); border-radius: 18px; padding: 18px;
+    box-shadow: 0 30px 60px -20px var(--shadow), inset 0 1px 0 rgba(255,255,255,0.03);
+    position: relative; overflow: hidden;
+  }
+  .panel-head { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 12px; }
+  .rows { display: flex; flex-direction: column; }
+  .row { display: grid; grid-template-columns: 52px 1fr; gap: 12px; align-items: center; min-height: 46px; border-top: 1px dashed var(--line); }
+  .row:first-child { border-top: none; }
+  .row .t { font-family: var(--mono); font-size: 0.74rem; color: var(--ink-faint); }
+  .task {
+    background: var(--surface-2); border: 1px solid var(--line); border-left: 3px solid var(--honey);
+    border-radius: 9px; padding: 9px 12px; font-size: 0.92rem; color: var(--ink);
+    display: flex; align-items: center; gap: 9px; opacity: 0; transform: translateY(6px) scale(.98);
+    transition: opacity .5s ease, transform .5s cubic-bezier(.2,.9,.2,1);
+  }
+  .task.show { opacity: 1; transform: none; }
+  .task .dot { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--honey); flex: none; }
+  .task .tt { font-family: var(--mono); font-size: 0.72rem; color: var(--honey); margin-left: auto; }
+
+  .pill {
+    position: absolute; left: 18px; right: 18px; bottom: 16px;
+    background: rgba(12,9,6,0.82);
+    border: 1px solid var(--line-strong); border-radius: 13px; padding: 13px 16px;
+    display: flex; align-items: center; gap: 11px; backdrop-filter: blur(8px);
+    box-shadow: 0 14px 30px -8px var(--shadow), 0 0 0 3px rgba(232,178,74,0.10);
+    font-size: 0.98rem;
+  }
+  @media (prefers-color-scheme: light) { .pill { background: rgba(255,252,246,0.9); } }
+  .pill .glyph { width: 15px; height: 15px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, var(--honey), var(--honey-deep)); flex: none; box-shadow: 0 0 14px rgba(232,178,74,0.55); }
+  .pill .typed { color: var(--ink); white-space: nowrap; overflow: hidden; }
+  .pill .caret { display: inline-block; width: 2px; height: 1.05em; background: var(--honey); vertical-align: -2px; margin-left: 1px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  section { position: relative; z-index: 1; padding: 68px 0; }
+  .rule { height: 1px; background: var(--line); max-width: 1120px; margin: 0 auto; }
+  .sec-head { max-width: 40ch; margin-bottom: 40px; }
+  .sec-head h2 { font-size: clamp(1.7rem, 3.1vw, 2.35rem); line-height: 1.1; margin: 10px 0 0; }
+  .sec-head p { color: var(--ink-soft); margin: 14px 0 0; }
+
+  .grid4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 15px; padding: 26px; transition: border-color .25s, transform .25s; }
+  .card:hover { border-color: var(--line-strong); transform: translateY(-2px); }
+  .card h3 { font-size: 1.28rem; margin: 0 0 10px; }
+  .card p { color: var(--ink-soft); margin: 0; font-size: 0.98rem; }
+  .card .kmark { font-family: var(--mono); font-size: 0.72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--honey); display: block; margin-bottom: 14px; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; }
+  .step .n { font-family: var(--serif); font-size: 2.4rem; color: var(--honey); line-height: 1; }
+  .step h3 { font-size: 1.24rem; margin: 12px 0 8px; }
+  .step p { color: var(--ink-soft); margin: 0; font-size: 0.98rem; }
+  .step code { font-family: var(--mono); font-size: 0.86em; color: var(--ink); background: var(--surface-2); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); }
+
+  .band { background: var(--ground-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .notlist { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px 34px; max-width: 820px; }
+  .notlist li { color: var(--ink-soft); padding-left: 26px; position: relative; font-size: 0.99rem; }
+  .notlist li::before { content: "—"; position: absolute; left: 0; color: var(--honey); }
+  .notlist li b { color: var(--ink); font-weight: 500; font-family: var(--serif); }
+
+  .close { text-align: center; padding: 92px 0; }
+  .close h2 { font-size: clamp(2rem, 4vw, 3rem); line-height: 1.08; margin: 0 auto; max-width: 18ch; }
+  .close .lede { margin: 20px auto 0; text-align: center; }
+  .close .cta-row { justify-content: center; }
+  .close .fineprint { margin-left: auto; margin-right: auto; text-align: center; }
+
+  footer { border-top: 1px solid var(--line); padding: 30px 0 44px; }
+  .foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; color: var(--ink-faint); font-size: 0.86rem; }
+
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; gap: 40px; padding-top: 24px; }
+    .demo { order: 2; }
+    .grid4, .steps, .notlist { grid-template-columns: 1fr; }
+    .steps { gap: 34px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    .task { opacity: 1; transform: none; }
+  }
+  :focus-visible { outline: 2px solid var(--honey); outline-offset: 3px; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="mark" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 15 C 8 15, 10 5, 20 6" stroke="url(#hg)" stroke-width="3.2" stroke-linecap="round"/>
+        <defs><linearGradient id="hg" x1="0" y1="0" x2="24" y2="0">
+          <stop offset="0" stop-color="#F0C255"/><stop offset="1" stop-color="#D0922F"/>
+        </linearGradient></defs>
+      </svg>
+    </span>
+    Slate
+  </div>
+  <a class="nav-cta" href="#get">Download</a>
+</header>
+
+<main>
+  <div class="wrap">
+    <div class="hero">
+      <div class="hero-copy">
+        <span class="eyebrow">Local-first day planner · Windows</span>
+        <h1>Breathe out a thought. <em>Watch it land</em> on your day.</h1>
+        <p class="lede">Slate is a fast, quiet day planner for Windows. Hit a hotkey anywhere, type what's on your mind — it reads the time and drops onto your timeline.</p>
+        <div class="cta-row">
+          <a class="btn" href="#get">Download for Windows <small>· free</small></a>
+          <a class="btn-ghost" href="#how">See how it works</a>
+        </div>
+        <p class="fineprint"><b>Everything stays on your machine.</b> No cloud, no account, no subscription, no AI running your schedule.</p>
+      </div>
+
+      <div class="demo" aria-hidden="true">
+        <div class="chord" id="chord">
+          <span class="cap">Alt</span><span class="plus">+</span><span class="cap">Space</span>
+        </div>
+        <div class="panel">
+          <div class="panel-head">Thursday · today</div>
+          <div class="rows">
+            <div class="row"><span class="t">09:00</span><span></span></div>
+            <div class="row"><span class="t">12:00</span><span><span class="task show"><span class="dot"></span>Lunch with Dana<span class="tt">12:00</span></span></span></div>
+            <div class="row"><span class="t">15:00</span><span></span></div>
+            <div class="row"><span class="t">18:00</span><span><span class="task" id="landed"><span class="dot"></span>Gym<span class="tt">18:00</span></span></span></div>
+          </div>
+          <div class="pill">
+            <span class="glyph"></span>
+            <span class="typed" id="typed"></span><span class="caret" id="caret"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rule"></div>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Why Slate</span>
+        <h2>The premium planners all live in someone else's cloud. Slate doesn't.</h2>
+        <p>One fast, private place for your day — built for the people the Mac-only, subscription-only tools left behind.</p>
+      </div>
+      <div class="grid4">
+        <div class="card">
+          <span class="kmark">Yours</span>
+          <h3>On your machine</h3>
+          <p>Tasks live in an encrypted database on your PC, fully offline. They never touch a server — because they never leave.</p>
+        </div>
+        <div class="card">
+          <span class="kmark">Native</span>
+          <h3>Actually fast</h3>
+          <p>Built in Rust and Flutter, not Electron. A global hotkey and a 120-fps timeline that answers the instant you touch it.</p>
+        </div>
+        <div class="card">
+          <span class="kmark">Owned</span>
+          <h3>No subscription</h3>
+          <p>A tool you keep, not rent. No $20 a month to look at your own day, no trial clock counting down.</p>
+        </div>
+        <div class="card">
+          <span class="kmark">Yours to run</span>
+          <h3>No AI overlord</h3>
+          <p>Nothing rearranges your day behind your back. You place time with your hands; Slate gets out of the way.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" class="band">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">How it works</span>
+        <h2>Three seconds, no forms.</h2>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="n">1</div>
+          <h3>Capture</h3>
+          <p>Press <code>Alt&nbsp;+&nbsp;Space</code> from anywhere — even over other apps. A quiet pill appears, ready.</p>
+        </div>
+        <div class="step">
+          <div class="n">2</div>
+          <h3>Parse</h3>
+          <p>Type <code>gym tomorrow at 6</code>. Slate reads the date and time itself — no fields, no pickers.</p>
+        </div>
+        <div class="step">
+          <div class="n">3</div>
+          <h3>Land</h3>
+          <p>It drops onto your day's timeline. Drag to move it, check it off, breathe. Back to work in two seconds.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Honest about it</span>
+        <h2>What Slate is <em style="font-style:italic;color:var(--honey)">not</em>.</h2>
+        <p>The wedge is focus. A few things it deliberately doesn't do — so you know before you download.</p>
+      </div>
+      <ul class="notlist">
+        <li><b>Not a cloud service.</b> No sync, no account. That's the point.</li>
+        <li><b>Not another AI planner.</b> It won't schedule for you.</li>
+        <li><b>Not on your phone yet.</b> Desktop-first, on purpose.</li>
+        <li><b>Not a 30-app hub.</b> One fast place, not a dispatcher.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="get" class="close">
+    <div class="wrap">
+      <span class="eyebrow">Try it</span>
+      <h2>Your day, on your machine.</h2>
+      <p class="lede">Free while it's in early testing. Two weeks with it, then tell me honestly — worth keeping, or not.</p>
+      <div class="cta-row">
+        <a class="btn" id="download" href="https://github.com/KaelSlate/KaelSlate.github.io/releases/latest/download/Slate_Setup.exe">Download for Windows <small>· Win 10/11 · ~14 MB</small></a>
+      </div>
+      <p class="fineprint">Not code-signed yet, so Windows will show a warning on install — click <b>More info → Run anyway</b>. It's a false positive, already under review by Microsoft.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div class="brand" style="font-size:1.05rem;">
+      <span class="mark" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 15 C 8 15, 10 5, 20 6" stroke="url(#hg2)" stroke-width="3.2" stroke-linecap="round"/><defs><linearGradient id="hg2" x1="0" y1="0" x2="24" y2="0"><stop offset="0" stop-color="#F0C255"/><stop offset="1" stop-color="#D0922F"/></linearGradient></defs></svg>
+      </span>
+      Slate
+    </div>
+    <div>Made by Kael · Windows 10 &amp; 11 · Your data never leaves your device</div>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var typed = document.getElementById("typed");
+    var caret = document.getElementById("caret");
+    var landed = document.getElementById("landed");
+    var chord = document.getElementById("chord");
+    var phrase = "gym tomorrow at 6pm";
+
+    if (reduce) {
+      if (typed) typed.textContent = phrase;
+      if (caret) caret.style.display = "none";
+      if (landed) landed.classList.add("show");
+      return;
+    }
+
+    function run() {
+      chord && chord.classList.add("press");
+      setTimeout(function () { chord && chord.classList.remove("press"); }, 520);
+      var i = 0;
+      setTimeout(function typeStep() {
+        if (!typed) return;
+        typed.textContent = phrase.slice(0, i);
+        i++;
+        if (i <= phrase.length) setTimeout(typeStep, 62 + Math.random() * 40);
+        else {
+          setTimeout(function () {
+            if (caret) caret.style.display = "none";
+            if (landed) landed.classList.add("show");
+          }, 520);
+          setTimeout(function () {
+            if (landed) landed.classList.remove("show");
+            if (typed) typed.textContent = "";
+            if (caret) caret.style.display = "";
+            run();
+          }, 5200);
+        }
+      }, 780);
+    }
+    var demo = document.querySelector(".demo");
+    if ("IntersectionObserver" in window && demo) {
+      var seen = false;
+      var io = new IntersectionObserver(function (es) {
+        es.forEach(function (e) { if (e.isIntersecting && !seen) { seen = true; run(); io.disconnect(); } });
+      }, { threshold: 0.4 });
+      io.observe(demo);
+    } else { run(); }
+  })();
+</script>
+</body>
+</html>
