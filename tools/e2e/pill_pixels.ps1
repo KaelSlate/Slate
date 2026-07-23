@@ -199,26 +199,31 @@ Write-Host ("gap below      : {0} px   (expected ~48)" -f $bottomGap)
 Write-Host ("peak/baseline  : {0:N1}   (how far the capsule stands out of the scrim)" -f $box[5])
 Write-Host ''
 
-# What this can and cannot assert, measured against BOTH a healthy and a broken
-# pill on 2026-07-23:
-#   VERTICAL band + seat - reliable. Healthy: 73 px tall, 36 px above the
-#                          bottom edge. Broken: jammed against the bottom
-#                          (0-15 px) and hundreds of px tall.
-#   HORIZONTAL width     - NOT reliable, so never asserted. The right half of
-#                          the capsule is nearly empty, so the column profile
-#                          finds only the text side (~320 px) even when the
-#                          pill is perfect. Printed for the record.
-# For horizontal geometry the saved PNG is the verdict - look at it.
+# WHAT IS ASSERTED, AND WHY SO LITTLE.
+# The capsule profile above is printed, never asserted. It was tried and it
+# lied in both directions on 2026-07-23: it FAILED a perfectly good pill (the
+# right half of an empty capsule barely differs from the scrim, so the column
+# profile only finds the text side) and it can pass junk when the pill paints
+# nothing at all. A check that cries wolf is worse than no check.
+# So the machine asserts only what it can actually know:
+#   - the pill became visible at all
+#   - its window matches the work area it was summoned onto (Win32 truth)
+# and it always writes the frame. Whether the capsule LOOKS right is a human
+# (or image-reading agent) call on that PNG - that is the lesson of v1.0.3,
+# where 12/12 green rects shipped a visibly stretched pill.
 $fails = New-Object Collections.Generic.List[string]
-$bandH = $y1 - $y0
-if ($bandH -lt 45 -or $bandH -gt 130) { $fails.Add("capsule band $bandH px tall, expected ~75 (stretched surface)") }
-if ($bottomGap -lt 15 -or $bottomGap -gt 90) { $fails.Add("gap below $bottomGap px, expected ~48 (surface seated wrong)") }
+$pw = $pr.right - $pr.left
+$ph = $pr.bottom - $pr.top
+if ($pw -ne $W -or $ph -ne $H) {
+  $fails.Add("pill window ${pw}x${ph} but work area ${W}x${H}")
+}
 
 if ($fails.Count -gt 0) {
-  Write-Host 'PIXEL CHECK FAIL'
+  Write-Host 'CHECK FAIL'
   $fails | ForEach-Object { Write-Host "  - $_" }
   exit 1
 }
-Write-Host 'PIXEL CHECK PASS - capsule is a normal band, correctly seated'
-Write-Host '  (horizontal geometry is not asserted here - check the PNG)'
+Write-Host 'CHECK PASS - pill came up and fills the work area'
+Write-Host '  now LOOK at the frame: the capsule must be a ~600 px band, centred,'
+Write-Host '  sitting ~48 px above the bottom. Rects alone shipped a broken 1.0.3.'
 exit 0

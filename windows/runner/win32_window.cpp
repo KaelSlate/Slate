@@ -133,7 +133,8 @@ bool Win32Window::Create(const std::wstring& title,
                          const Point& origin,
                          const Size& size,
                          DWORD style,
-                         DWORD ex_style) {
+                         DWORD ex_style,
+                         bool physical_pixels) {
   Destroy();
 
   const wchar_t* window_class =
@@ -143,7 +144,9 @@ bool Win32Window::Create(const std::wstring& title,
                               static_cast<LONG>(origin.y)};
   HMONITOR monitor = MonitorFromPoint(target_point, MONITOR_DEFAULTTONEAREST);
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
-  double scale_factor = dpi / 96.0;
+  // Callers that already speak device pixels (the pill, sized from the work
+  // area) must not be scaled a second time.
+  double scale_factor = physical_pixels ? 1.0 : dpi / 96.0;
 
   HWND window = CreateWindowEx(
       ex_style, window_class, title.c_str(), style,

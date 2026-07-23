@@ -35,9 +35,15 @@ class Win32Window {
   // as appropriate for the default monitor. The window is invisible until
   // |Show| is called. |style|/|ex_style| default to the normal top-level app
   // window; the separate pill window passes a borderless topmost tool window.
+  //
+  // |physical_pixels| turns that scaling OFF, for callers whose numbers already
+  // come from the OS in device pixels — the pill is sized from the work area,
+  // so scaling it again made the window dpi/96 times too large (at 125% it was
+  // born 1.25x the screen and needed a resize heal on every first summon).
   // Returns true if the window was created successfully.
   bool Create(const std::wstring& title, const Point& origin, const Size& size,
-              DWORD style = WS_OVERLAPPEDWINDOW, DWORD ex_style = 0);
+              DWORD style = WS_OVERLAPPEDWINDOW, DWORD ex_style = 0,
+              bool physical_pixels = false);
 
   // Show the current window. Returns true if the window was successfully shown.
   bool Show();

@@ -199,11 +199,16 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
   late final AnimationController _submitAnim;
   late final AnimationController _focusController;
 
+  /// Last [SmartInputNotifier.reveals] this field acted on — see _onNotifier.
+  int _seenReveals = 0;
+
   @override
   void initState() {
     super.initState();
     _controller = SmartInputController();
     _controller.addListener(_onTextChanged);
+    _seenReveals = widget.notifier.reveals;
+    widget.notifier.addListener(_onNotifier);
 
     _appearController = AnimationController(
       vsync: this,
@@ -399,9 +404,25 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
     });
   }
 
+  /// [SmartInputNotifier.clear] means "reset for a fresh capture", and the
+  /// field has to obey it — otherwise text typed but never submitted survives
+  /// the pill being dismissed and greets the user on the next summon, on top
+  /// of the placeholder that is supposed to be teaching them the syntax.
+  /// Submit already clears the text itself, so this is a no-op there.
+  void _onNotifier() {
+    if (widget.notifier.reveals == _seenReveals) return;
+    _seenReveals = widget.notifier.reveals;
+    if (_controller.text.isEmpty) return;
+    _controller.clear();
+    _controller.updateResult(const ParseResult());
+    _dateIgnored = false;
+    if (mounted) setState(() => _lastResult = const ParseResult());
+  }
+
   @override
   void dispose() {
     if (widget.floating) widget.focusNode.onKeyEvent = null;
+    widget.notifier.removeListener(_onNotifier);
     widget.focusNode.removeListener(_onFocusChange);
     _controller.dispose();
     _appearController.dispose();

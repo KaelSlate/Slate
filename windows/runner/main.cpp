@@ -89,8 +89,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     pill_window = std::make_unique<PillWindow>(pill_project);
     Win32Window::Point pill_origin(wa.left, wa.top);
     Win32Window::Size pill_size(wa.right - wa.left, wa.bottom - wa.top);
+    // physical_pixels: SPI_GETWORKAREA already answers in device pixels, so
+    // Create must not apply the DPI scale on top (see win32_window.h).
     pill_window->Create(L"SlatePill", pill_origin, pill_size, WS_POPUP,
-                        WS_EX_TOPMOST | WS_EX_TOOLWINDOW);
+                        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                        /*physical_pixels=*/true);
     // Pill submit -> main isolate creates the task (one engine, one DB).
     pill_window->SetCaptureSink(
         [&window](const flutter::EncodableValue& v) { window.SendCapture(v); });

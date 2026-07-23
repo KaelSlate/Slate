@@ -55,12 +55,27 @@ public class Geo {
 }
 '@
 
+function Wait-PillDown([int]$timeoutMs = 4000) {
+  # Each step ends with Esc, and the pill fades out. Starting the next step
+  # before it is really down makes the next Alt+Space a TOGGLE-dismiss, which
+  # produced an empty frame that looked like a rendering bug but was this
+  # harness racing itself.
+  $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+  while ((Get-Date) -lt $deadline) {
+    if (-not [Geo]::Visible()) { Start-Sleep -Milliseconds 400; return $true }
+    Start-Sleep -Milliseconds 100
+  }
+  Write-Host '    (warning: pill still up after the previous step)'
+  return $false
+}
+
 function Invoke-PixelCheck($label, $shot) {
   Write-Host "--- $label ---"
   & powershell -NoProfile -ExecutionPolicy Bypass -File $pixels -Out $shot | ForEach-Object { Write-Host "    $_" }
   $ok = ($LASTEXITCODE -eq 0)
   Write-Host ("    => {0}" -f $(if ($ok) { 'PASS' } else { 'FAIL' }))
   Write-Host ''
+  [void](Wait-PillDown)
   return $ok
 }
 
@@ -106,8 +121,9 @@ foreach ($k in $results.Keys) {
   Write-Host ("{0,-24} {1}" -f $k, $(if ($results[$k]) { 'PASS' } else { 'FAIL' }))
 }
 Write-Host ''
-Write-Host "frames written to $OutDir - LOOK at them: the pixel check asserts the"
-Write-Host "vertical band only, horizontal stretch is a human/agent call."
+Write-Host "frames written to $OutDir - LOOK at them. The machine only asserts that"
+Write-Host "the pill came up and fills the work area; whether the capsule is a ~600 px"
+Write-Host "band, centred, ~48 px off the bottom is a human/agent call on the PNGs."
 if ($fail -gt 0) { Write-Host "$fail step(s) failed"; exit 1 }
 Write-Host 'All geometry-change steps passed'
 exit 0
