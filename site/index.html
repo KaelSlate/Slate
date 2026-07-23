@@ -122,19 +122,34 @@
     position: relative; overflow: hidden;
   }
   .panel-head { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 12px; }
-  .rows { display: flex; flex-direction: column; }
-  .row { display: grid; grid-template-columns: 52px 1fr; gap: 12px; align-items: center; min-height: 46px; border-top: 1px dashed var(--line); }
-  .row:first-child { border-top: none; }
-  .row .t { font-family: var(--mono); font-size: 0.74rem; color: var(--ink-faint); }
-  .task {
-    background: var(--surface-2); border: 1px solid var(--line); border-left: 3px solid var(--honey);
-    border-radius: 9px; padding: 9px 12px; font-size: 0.92rem; color: var(--ink);
-    display: flex; align-items: center; gap: 9px; opacity: 0; transform: translateY(6px) scale(.98);
+  /* Horizontal hour ribbon — space IS time, the way the app actually reads. */
+  .ribbon { position: relative; padding-bottom: 46px; }
+  .hours {
+    display: grid; grid-template-columns: repeat(11, 1fr);
+    font-family: var(--mono); font-size: 0.64rem; color: var(--ink-faint);
+    padding-bottom: 7px; border-bottom: 1px solid var(--line);
+  }
+  .hours span { padding-left: 3px; }
+  .lanes {
+    position: relative; height: 104px;
+    background: repeating-linear-gradient(to right,
+      transparent 0, transparent calc(9.0909% - 1px),
+      var(--line) calc(9.0909% - 1px), var(--line) 9.0909%);
+  }
+  .blk {
+    position: absolute; height: 36px; display: flex; align-items: center;
+    padding: 0 11px; font-size: 0.85rem; color: var(--ink);
+    white-space: nowrap; overflow: hidden;
+    background: rgba(232,178,74,0.13);
+    border-left: 3px solid var(--honey); border-radius: 0 8px 8px 0;
+    opacity: 0; transform: translateY(6px) scale(.985);
     transition: opacity .5s ease, transform .5s cubic-bezier(.2,.9,.2,1);
   }
-  .task.show { opacity: 1; transform: none; }
-  .task .dot { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--honey); flex: none; }
-  .task .tt { font-family: var(--mono); font-size: 0.72rem; color: var(--honey); margin-left: auto; }
+  .blk.lane1 { top: 16px; }
+  .blk.lane2 { top: 60px; }
+  .blk.show { opacity: 1; transform: none; }
+  .now { position: absolute; left: 45.4%; top: 0; bottom: 0; width: 1px; background: var(--honey); opacity: .45; }
+  .now::before { content: ""; position: absolute; left: -3px; top: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--honey); }
 
   .pill {
     position: absolute; left: 18px; right: 18px; bottom: 16px;
@@ -234,11 +249,15 @@
         </div>
         <div class="panel">
           <div class="panel-head">Thursday · today</div>
-          <div class="rows">
-            <div class="row"><span class="t">09:00</span><span></span></div>
-            <div class="row"><span class="t">12:00</span><span><span class="task show"><span class="dot"></span>Lunch with Dana<span class="tt">12:00</span></span></span></div>
-            <div class="row"><span class="t">15:00</span><span></span></div>
-            <div class="row"><span class="t">18:00</span><span><span class="task" id="landed"><span class="dot"></span>Gym<span class="tt">18:00</span></span></span></div>
+          <div class="ribbon">
+            <div class="hours">
+              <span>09</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span><span>19</span>
+            </div>
+            <div class="lanes">
+              <span class="now"></span>
+              <span class="blk lane1 show" style="left:27.27%; width:13.6%;">Lunch with Dana</span>
+              <span class="blk lane2" id="landed" style="left:81.81%; width:13.6%;">Gym</span>
+            </div>
           </div>
           <div class="pill">
             <span class="glyph"></span>
