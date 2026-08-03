@@ -50,12 +50,21 @@ class PillWindow : public Win32Window {
   // Timer-driven tail of that heal: nudge the size, then play the entrance.
   void StepHeal();
 
+  // Ask Dart to play the entrance and uncloak only once it answers — i.e. once
+  // a frame of its own has actually reached the compositor.
+  void RevealWhenPainted();
+  void Uncloak();
+  // DWM cloak: the window keeps rendering, it just isn't composited onto the
+  // desktop. This is what keeps every pre-Flutter pixel off the screen.
+  void SetCloak(bool on);
+
   flutter::DartProject project_;
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
   std::function<void(const flutter::EncodableValue&)> capture_sink_;
   HWND prior_foreground_ = nullptr;  // app to restore focus to on dismiss
   int heal_phase_ = 0;               // 0 idle, 1 nudge due, 2 entrance due
+  bool cloaked_ = false;
 };
 
 #endif  // RUNNER_PILL_WINDOW_H_

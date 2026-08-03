@@ -7,7 +7,9 @@
 # whatever app is in front, from any main-window state.
 
 param(
-  [string]$Exe = (Join-Path $PSScriptRoot '..\..\Releases\slate_v1.0.6\slate.exe'),
+  # The freshly built binary. The old default pointed at Releases\slate_v1.0.6,
+  # which the retention rule deletes — the matrix could not start at all.
+  [string]$Exe = (Join-Path $PSScriptRoot '..\..\build\windows\x64\runner\Release\slate.exe'),
   [string[]]$Scenario
 )
 

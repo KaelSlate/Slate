@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'core/engine/capture_destination.dart';
@@ -99,7 +100,7 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
   }
 
   Future<dynamic> _onNative(MethodCall call) async {
-    if (call.method == 'reveal') _reveal();
+    if (call.method == 'reveal') await _reveal();
     if (call.method == 'warmup') _warmup();
     return null;
   }
@@ -119,7 +120,11 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
 
   /// Window was just shown by the runner: reset to a clean pill and play the
   /// entrance spring from zero, on screen.
-  void _reveal() {
+  ///
+  /// The REPLY to this call is what uncloaks the window (pill_window.cpp), so
+  /// it must not come back before there are pixels: two frames — one builds the
+  /// entrance, the second is proof the first reached the compositor.
+  Future<void> _reveal() async {
     _leaving = false;
     // setState, not a bare ++: the pill widget reads _showRapidHint from THIS
     // build, so the counter has to reach it before the user starts typing.
@@ -139,6 +144,8 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focusNode.requestFocus();
     });
+    await SchedulerBinding.instance.endOfFrame;
+    await SchedulerBinding.instance.endOfFrame;
   }
 
   bool _keyHandler(KeyEvent event) {

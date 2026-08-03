@@ -88,3 +88,6 @@ dart_devtools_*.json
 /test_create.dart
 /test_encoding.dart
 .claude/settings.json
+
+# e2e capture output (screenshots, flash frames) - evidence, not source
+/tools/e2e/_*/

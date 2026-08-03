@@ -1,8 +1,14 @@
 #include "pill_window.h"
 
+#include <dwmapi.h>
+#include <flutter/method_result_functions.h>
 #include <flutter_acrylic/flutter_acrylic_plugin.h>
 
 #include <optional>
+
+#ifndef DWMWA_CLOAK
+#define DWMWA_CLOAK 13
+#endif
 
 namespace {
 
@@ -10,6 +16,11 @@ namespace {
 // the engine to actually present, which is the whole point of the exercise.
 constexpr UINT_PTR kHealTimerId = 1;
 constexpr UINT kHealStepMs = 50;
+
+// Belt for the cloak: if Dart never answers, show the pill anyway. Degrades to
+// the old behaviour, never worse.
+constexpr UINT_PTR kUncloakTimerId = 2;
+constexpr UINT kUncloakFallbackMs = 150;
 
 }  // namespace
 
@@ -58,7 +69,48 @@ bool PillWindow::OnCreate() {
       });
 
   flutter_controller_->ForceRedraw();
+  SetCloak(true);
   return true;
+}
+
+// The screen-lift bug, measured 2026-08-03: on show, DefWindowProc erases the
+// client area with the class brush (win32_window.cpp), GDI leaves alpha 0, and
+// DWM ADDS that graphite to the desktop under a per-pixel transparent window —
+// 2 summons in 15 lifted the whole work area by exactly +21,+17,+13 (0x15110D).
+// Dropping the brush only trades it for a white surface, so the lever is time:
+// cloaked, the window renders and focuses but is not composited at all.
+void PillWindow::SetCloak(bool on) {
+  HWND hwnd = GetHandle();
+  if (!hwnd || cloaked_ == on) return;
+  BOOL value = on ? TRUE : FALSE;
+  ::DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &value, sizeof(value));
+  cloaked_ = on;
+}
+
+void PillWindow::Uncloak() {
+  HWND hwnd = GetHandle();
+  if (!hwnd) return;
+  ::KillTimer(hwnd, kUncloakTimerId);
+  // Dismissed while we waited — leave it cloaked for the next summon.
+  if (::IsWindowVisible(hwnd)) SetCloak(false);
+}
+
+void PillWindow::RevealWhenPainted() {
+  HWND hwnd = GetHandle();
+  if (!hwnd) return;
+  if (!channel_) {
+    SetCloak(false);
+    return;
+  }
+  ::SetTimer(hwnd, kUncloakTimerId, kUncloakFallbackMs, nullptr);
+  auto reveal = [this](const flutter::EncodableValue*) { Uncloak(); };
+  channel_->InvokeMethod(
+      "reveal", nullptr,
+      std::make_unique<flutter::MethodResultFunctions<flutter::EncodableValue>>(
+          reveal,
+          [reveal](const std::string&, const std::string&,
+                   const flutter::EncodableValue*) { reveal(nullptr); },
+          [reveal]() { reveal(nullptr); }));
 }
 
 void PillWindow::ShowPill() {
@@ -88,6 +140,9 @@ void PillWindow::ShowPill() {
   const int width = work.right - work.left;
   const int height = work.bottom - work.top;
 
+  // Nothing below reaches the screen until Dart answers (see SetCloak).
+  SetCloak(true);
+
   // Did the display geometry move under us while this window sat hidden?
   // Parsec/RDP switching the host resolution, a monitor hotplug, a DPI change —
   // all of them leave the pill sized for a screen that no longer exists.
@@ -111,7 +166,7 @@ void PillWindow::ShowPill() {
   ::SetForegroundWindow(hwnd);
   ::SetFocus(hwnd);
 
-  if (channel_) channel_->InvokeMethod("reveal", nullptr);
+  RevealWhenPainted();
 }
 
 // Resizing this window while it is HIDDEN does not reach the engine: it keeps
@@ -164,9 +219,7 @@ void PillWindow::StepHeal() {
 
   ::KillTimer(hwnd, kHealTimerId);
   heal_phase_ = 0;
-  if (::IsWindowVisible(hwnd) && channel_) {
-    channel_->InvokeMethod("reveal", nullptr);
-  }
+  if (::IsWindowVisible(hwnd)) RevealWhenPainted();
 }
 
 void PillWindow::HidePill() {
@@ -178,6 +231,8 @@ void PillWindow::HidePill() {
     ::KillTimer(hwnd, kHealTimerId);
     heal_phase_ = 0;
   }
+  ::KillTimer(hwnd, kUncloakTimerId);
+  SetCloak(true);
   ::ShowWindow(hwnd, SW_HIDE);
   // Hand the keyboard back to the app the user summoned the pill over.
   if (prior_foreground_ && ::IsWindow(prior_foreground_)) {
@@ -200,6 +255,10 @@ LRESULT PillWindow::MessageHandler(HWND hwnd, UINT const message,
   // controller claims WM_TIMER.
   if (message == WM_TIMER && wparam == kHealTimerId) {
     StepHeal();
+    return 0;
+  }
+  if (message == WM_TIMER && wparam == kUncloakTimerId) {
+    Uncloak();
     return 0;
   }
 
