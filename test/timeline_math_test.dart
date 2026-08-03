@@ -119,30 +119,128 @@ void main() {
     });
   });
 
-  group('laneNearest — ghost follows the cursor', () {
-    test('no overlap → always lane 0 whatever the cursor wants', () {
-      final r = TimelineMath.laneNearest(
-          const [], const LaneSpan(0, 100), 5,
-          maxLanes: 1);
-      expect(r, 0);
+  group('block geometry — packing and pixels are the same number', () {
+    test('a short block occupies the minimum it is drawn at', () {
+      expect(TimelineMath.blockWidth(15), TimelineMath.minBlockWidth);
+      expect(TimelineMath.blockWidth(20), TimelineMath.minBlockWidth);
+      // 29 min is the break-even at 100px/hour.
+      expect(TimelineMath.blockWidth(60), 100.0);
+      expect(TimelineMath.blockWidth(90), 150.0);
     });
 
-    test('one overlapping block → cursor picks above or below', () {
-      final existing = [const LaneSpan(0, 100)]; // occupies lane 0 at the slot
-      final probe = const LaneSpan(0, 100); // overlaps it
-      // Cursor high → lane 0 is taken → nearest free is 1.
-      expect(
-          TimelineMath.laneNearest(existing, probe, 0, maxLanes: 2), 1);
-      // Cursor low → wants lane 1, which is free → 1.
-      expect(
-          TimelineMath.laneNearest(existing, probe, 1, maxLanes: 2), 1);
+    test('two short blocks 15 min apart do NOT share a row', () {
+      // THE bug: packed by true duration (25px) they don't overlap and land on
+      // the same row — then both paint 48px wide and sit on top of each other.
+      final a = LaneSpan(TimelineMath.minutesToPx(600),
+          TimelineMath.blockWidth(15),
+          id: 'A');
+      final b = LaneSpan(TimelineMath.minutesToPx(615),
+          TimelineMath.blockWidth(15),
+          id: 'B');
+      final lanes = TimelineMath.assignLanes([a, b], gap: 0);
+      expect(lanes[0] == lanes[1], isFalse,
+          reason: 'they overlap on screen, so they must not share a row');
     });
 
-    test('non-overlapping existing block leaves the probe on lane 0', () {
-      final existing = [const LaneSpan(400, 100)]; // far away, no overlap
-      final probe = const LaneSpan(0, 100);
-      expect(
-          TimelineMath.laneNearest(existing, probe, 3, maxLanes: 1), 0);
+    test('laneTop matches the block layer stride', () {
+      expect(TimelineMath.laneTop(0), TimelineMath.topPad);
+      expect(TimelineMath.laneTop(2),
+          TimelineMath.topPad + 2 * (TimelineMath.blockH + TimelineMath.rowGap));
+    });
+  });
+
+  group('laneForDrop — the ghost promises what the packer will do', () {
+    /// The lane the block layer will actually give each span, so a test can
+    /// check the ghost against reality rather than against itself.
+    Map<String, int> realRows(List<LaneSpan> all) {
+      final lanes = TimelineMath.assignLanes(all, gap: 0);
+      return {for (var i = 0; i < all.length; i++) all[i].id!: lanes[i]};
+    }
+
+    test('no overlap → lane 0 however low the cursor points', () {
+      // A lone block must not float below itself just because the pointer is low.
+      const existing = [LaneSpan(400, 100, id: 'A', pref: 0)];
+      const probe = LaneSpan(0, 100, id: 'P', pref: 5);
+      expect(TimelineMath.laneForDrop(existing, probe, gap: 0), 0);
+    });
+
+    test('an occupied row pushes the probe down', () {
+      const existing = [LaneSpan(0, 100, id: 'A', pref: 0)];
+      const probe = LaneSpan(0, 100, id: 'P', pref: 0);
+      expect(TimelineMath.laneForDrop(existing, probe, gap: 0), 1);
+    });
+
+    test('sticky rows: the ghost reads the layout that EXISTS, not a fresh one',
+        () {
+      // THE regression. A sits on row 1 and B on row 0 — a perfectly reachable
+      // state, because the packer is sticky (pref-first). A fresh pref-less
+      // pack of the same two spans comes out MIRRORED (A→0, B→1), which is what
+      // the old second packer computed. The ghost then measured the wrong row,
+      // drew itself over A, and the drop landed a row away.
+      const a = LaneSpan(800, 400, id: 'A', pref: 1); // 08:00–12:00
+      const b = LaneSpan(1000, 100, id: 'B', pref: 0); // 10:00–11:00
+      const probe = LaneSpan(1150, 100, id: 'P', pref: 0); // 11:30, cursor row 0
+
+      // Reality: A really is on row 1, B on row 0.
+      final rows = realRows(const [a, b, probe]);
+      expect(rows['A'], 1);
+      expect(rows['B'], 0);
+
+      final ghost = TimelineMath.laneForDrop(const [a, b], probe, gap: 0);
+      expect(ghost, rows['P'],
+          reason: 'the ghost IS the packer — it cannot differ from the landing');
+      expect(ghost, 0, reason: 'row 0 is genuinely free at 11:30–12:30');
+    });
+
+    test('the promised lane survives the layer re-packing everything', () {
+      // The drop hands laneForDrop's answer back as the new block's pref. The
+      // layer then packs the lot from scratch — and must reproduce the same
+      // rows, or the settled preview and the block that appears disagree. This
+      // is the exact "flew there, then dropped a row" symptom, in one assert.
+      const existing = [
+        LaneSpan(800, 400, id: 'A', pref: 1),
+        LaneSpan(1000, 100, id: 'B', pref: 0),
+        LaneSpan(1150, 200, id: 'C', pref: 2),
+      ];
+      final before = realRows(existing);
+
+      for (final desired in [0, 1, 2, 3]) {
+        final probe = LaneSpan(900, 300, id: 'P', pref: desired);
+        final promised = TimelineMath.laneForDrop(existing, probe, gap: 0);
+
+        // What the block layer will hold a frame later: everyone's sticky row
+        // plus the dropped block carrying the promised row.
+        final after = realRows([
+          ...existing,
+          LaneSpan(probe.left, probe.width, id: 'P', pref: promised),
+        ]);
+        expect(after['P'], promised,
+            reason: 'cursor row $desired: promised $promised, landed ${after['P']}');
+        for (final s in existing) {
+          expect(after[s.id], before[s.id],
+              reason: '${s.id} must not be shoved aside by a drop');
+        }
+      }
+    });
+
+    test('the promised lane is never one an existing block is sitting on', () {
+      const existing = [
+        LaneSpan(800, 400, id: 'A', pref: 1),
+        LaneSpan(1000, 100, id: 'B', pref: 0),
+        LaneSpan(1150, 200, id: 'C', pref: 2),
+      ];
+      final rows = realRows(existing);
+      for (final desired in [0, 1, 2, 3, 7]) {
+        final probe = LaneSpan(900, 300, id: 'P', pref: desired);
+        final lane = TimelineMath.laneForDrop(existing, probe, gap: 0);
+        for (final s in existing) {
+          if (rows[s.id] != lane) continue;
+          final overlaps = probe.left < s.left + s.width &&
+              s.left < probe.left + probe.width;
+          expect(overlaps, isFalse,
+              reason: 'cursor row $desired → lane $lane collides with ${s.id}');
+        }
+      }
     });
   });
 

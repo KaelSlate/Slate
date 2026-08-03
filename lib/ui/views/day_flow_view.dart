@@ -89,75 +89,66 @@ class _DayFlowViewState extends State<DayFlowView>
   double _autoScrollVelocity = 0;
 
   // ── Offset helpers ─────────────────────────────────────────────────────────
-  double _centeredOffset(num absoluteIndex) {
-    return (absoluteIndex * _colWidth) - (_viewportWidth / 2) + (_colWidth / 2);
+  //
+  // The ribbon is a RULER, and a ruler never opens on half a number. Every
+  // resting offset it is given is a whole number of hour columns, so the
+  // viewport's left edge always falls on an hour line and the leading label is
+  // always whole. It used to centre a MINUTE (now / the middle of the densest
+  // task window / noon), which lands mid-column virtually every time — that is
+  // why the hour at the left edge came out sliced through the digits.
+
+  /// Scroll offset that puts absolute column [index] flush against the left
+  /// edge. Always hour-aligned by construction.
+  double _columnOffset(num index) =>
+      (index * _colWidth).clamp(0.0, _hourCenter * 2 * _colWidth);
+
+  /// Column index of a minute-of-day on the day [dayOffset] days from zeroDate.
+  int _columnFor(int minuteOfDay, {int dayOffset = 0}) =>
+      _hourCenter + dayOffset * 24 + (minuteOfDay ~/ 60);
+
+  /// Where TODAY rests: the current hour is the SECOND column, so the hour just
+  /// gone stays in view and the rest of the viewport is the day ahead.
+  double _nowAnchorOffset() {
+    final now = DateTime.now();
+    final dayOffset =
+        DateTime(now.year, now.month, now.day).difference(_zeroDate).inDays;
+    return _columnOffset(
+        _columnFor(now.hour * 60 + now.minute, dayOffset: dayOffset) - 1);
   }
 
-  // Centers a continuous minute position of _zeroDate's day (no +col/2 shift).
-  double _offsetForMinute(double minutes) {
-    final raw = (_hourCenter * _colWidth) +
-        (minutes * _colWidth / 60.0) -
-        (_viewportWidth / 2);
-    return raw.clamp(0.0, _hourCenter * 2 * _colWidth);
-  }
-
-  double _nowOffset() => _offsetForMinute(
-      DateTime.now().difference(_zeroDate).inMinutes.toDouble());
-
-  // Day-open policy: today → now-line; other day → densest task cluster; empty → noon.
+  /// THE day-open rule. One function — entering a day, the DAY button and a
+  /// date change all use it, so pressing DAY returns you to exactly the view
+  /// the day opened with. Three cases, each an exact column:
+  ///
+  ///   today            → the current hour, one column in from the left
+  ///   day with tasks   → the earliest scheduled hour, with an hour of lead-in
+  ///   empty day        → 08:00 at the left edge
+  ///
+  /// Stable on purpose: the old "densest viewport-wide window" search re-aimed
+  /// the whole view whenever ANY task on the day moved, so the same day never
+  /// opened the same way twice.
   double _dayOpenOffset() {
     final now = DateTime.now();
     final sel = widget.selectedDate;
     final isToday =
         sel.year == now.year && sel.month == now.month && sel.day == now.day;
-    if (isToday) return _nowOffset();
+    if (isToday) return _nowAnchorOffset();
 
     final state = widget.taskState;
-    if (state == null) return _offsetForMinute(720);
     final tasks = state
-        .tasksForDateNotifier(_zeroDate.millisecondsSinceEpoch)
-        .value
-        .where((t) => t.isAllocated && t.startTime != null)
-        .toList();
-    if (tasks.isEmpty) return _offsetForMinute(720);
+            ?.tasksForDateNotifier(_zeroDate.millisecondsSinceEpoch)
+            .value
+            .where((t) => t.isAllocated && t.startTime != null) ??
+        const <RustTask>[];
 
-    final starts = <double>[];
-    final ends = <double>[];
-    double minStart = double.infinity, maxEnd = double.negativeInfinity;
+    var earliest = -1;
     for (final t in tasks) {
-      final s = t.startTime!.toDouble();
-      final e = math.max((t.endTime ?? (t.startTime! + 60)).toDouble(), s + 15);
-      starts.add(s);
-      ends.add(e);
-      minStart = math.min(minStart, s);
-      maxEnd = math.max(maxEnd, e);
+      if (earliest < 0 || t.startTime! < earliest) earliest = t.startTime!;
     }
-
-    final visMin = _viewportWidth * 60.0 / _colWidth;
-    if (maxEnd - minStart <= visMin) {
-      return _offsetForMinute((minStart + maxEnd) / 2);
-    }
-
-    // Densest viewport-wide window: coverage = visible task-minutes, candidate
-    // windows aligned to interval endpoints, earliest window wins ties.
-    final candidates = <double>[
-      for (final s in starts) s,
-      for (final e in ends) e - visMin,
-    ]..sort();
-    double bestLeft = candidates.first;
-    double bestCover = -1;
-    for (final c in candidates) {
-      double cover = 0;
-      for (int i = 0; i < starts.length; i++) {
-        cover +=
-            math.max(0.0, math.min(ends[i], c + visMin) - math.max(starts[i], c));
-      }
-      if (cover > bestCover) {
-        bestCover = cover;
-        bestLeft = c;
-      }
-    }
-    return _offsetForMinute(bestLeft + visMin / 2);
+    // 08:00 is the civil start of a day — an empty day looks the same wherever
+    // you meet it, instead of parking on an arbitrary noon.
+    if (earliest < 0) return _columnOffset(_columnFor(8 * 60));
+    return _columnOffset(_columnFor(earliest) - 1); // one hour of lead-in
   }
 
   @override
@@ -170,11 +161,9 @@ class _DayFlowViewState extends State<DayFlowView>
     _smartNotifier = SmartInputNotifier();
 
     // Provisional offset only; the ribbon ListView attaches after _ribbonReady,
-    // by which point the post-frame below has set the exact day-open target
-    // (viewport already measured by the LayoutBuilder around the skeleton).
-    _flowScrollController = _RibbonScrollController(
-      initial: _offsetForMinute(DateTime.now().hour * 60.0),
-    );
+    // by which point the post-frame below has set the exact day-open target.
+    // Hour-aligned even here, so nothing can ever attach mid-column.
+    _flowScrollController = _RibbonScrollController(initial: _dayOpenOffset());
     _flowScrollController.addListener(_onRibbonScroll);
 
     // Global 'C' shortcut: HardwareKeyboard raw handler — zero latency,
@@ -204,8 +193,30 @@ class _DayFlowViewState extends State<DayFlowView>
 
   // ── Edge auto-scroll (drag near ribbon edges pans the timeline) ───────────
 
+  /// The edge pan is the one thing allowed to leave the ribbon mid-column —
+  /// it has to be smooth while a card is in the air. This remembers that it
+  /// happened so the ribbon can be put back on the hour grid afterwards.
+  bool _autoScrolledOffGrid = false;
+
   void _onDragPhaseChanged() {
-    if (!DragSession.instance.isActive) _stopAutoScroll();
+    if (DragSession.instance.isActive) return;
+    _stopAutoScroll();
+    // Only once the session is fully IDLE: the preview settles onto a global
+    // rect, so moving the ribbon while it is still flying would slide the
+    // landing spot out from under it.
+    if (DragSession.instance.phase == DragPhase.idle) _realignToHour();
+  }
+
+  /// Ease back onto the nearest hour line after an edge pan left the ribbon
+  /// between columns.
+  void _realignToHour() {
+    if (!_autoScrolledOffGrid) return;
+    _autoScrolledOffGrid = false;
+    if (!_flowScrollController.hasClients) return;
+    final offset = _flowScrollController.offset;
+    final aligned = (offset / _colWidth).round() * _colWidth;
+    if ((aligned - offset).abs() < 0.5) return;
+    _glideTo(aligned, duration: const Duration(milliseconds: 260));
   }
 
   void _onDragPointerMoved() {
@@ -246,6 +257,7 @@ class _DayFlowViewState extends State<DayFlowView>
     final pos = _flowScrollController.position;
     final next = (_flowScrollController.offset + _autoScrollVelocity * dt)
         .clamp(0.0, pos.maxScrollExtent);
+    _autoScrolledOffGrid = true;
     _flowScrollController.jumpTo(next);
     // _onRibbonScroll fires via the controller listener → hover refresh below
     // keeps the snapped ghost glued to the grid while the ribbon pans.
@@ -372,40 +384,19 @@ class _DayFlowViewState extends State<DayFlowView>
     super.dispose();
   }
 
-  void _snapToCurrentHour() {
-    if (_flowScrollController.hasClients) {
-      _flowScrollController.animateTo(
-        _nowOffset(),
-        duration: const Duration(milliseconds: 600),
-        curve: Curves.easeOutCubic,
-      );
-    }
+  /// Ease to an hour-aligned offset. The ONE way anything moves the ribbon to
+  /// rest — nothing else is allowed to leave it mid-column.
+  void _glideTo(double offset,
+      {Duration duration = const Duration(milliseconds: 600)}) {
+    if (!_flowScrollController.hasClients) return;
+    _flowScrollController.animateTo(
+      offset.clamp(0.0, _flowScrollController.position.maxScrollExtent),
+      duration: duration,
+      curve: Curves.easeOutCubic,
+    );
   }
 
-  double _getOptimalSnapOffset() {
-    if (widget.taskState == null) return _centeredOffset(_hourCenter + 12.0);
-    final dayTs = DateTime(widget.selectedDate.year, widget.selectedDate.month, widget.selectedDate.day).millisecondsSinceEpoch;
-    final tasks = widget.taskState!.tasksForDateNotifier(dayTs).value.where((t) => t.isAllocated && t.startTime != null).toList();
-    
-    if (tasks.isEmpty) {
-      return _centeredOffset(_hourCenter + 12.0); // Middle of day
-    }
-    
-    final uncompleted = tasks.where((t) => !t.isCompleted).toList();
-    if (uncompleted.isNotEmpty) {
-      // Earliest uncompleted task
-      uncompleted.sort((a, b) => a.startTime!.compareTo(b.startTime!));
-      return _centeredOffset(_hourCenter + (uncompleted.first.startTime! / 60.0));
-    }
-    
-    // All completed, find average time (cluster)
-    double totalMins = 0;
-    for (var t in tasks) {
-      totalMins += t.startTime!;
-    }
-    final avgMins = totalMins / tasks.length;
-    return _centeredOffset(_hourCenter + (avgMins / 60.0));
-  }
+  void _snapToCurrentHour() => _glideTo(_nowAnchorOffset());
 
   // ═══════════════════════════════════════════════════════════════════════════
   // BUILD — Dual-Pane Root
@@ -669,11 +660,13 @@ class _DayFlowViewState extends State<DayFlowView>
                       builder: (context, child) {
                         bool isSnapped = false;
                         if (_flowScrollController.hasClients) {
-                          // ~Half a column width tolerance
+                          // Against the SAME anchor the button flies to, within
+                          // half a column — "you are already here" has to mean
+                          // the place the button would take you.
                           isSnapped = (_flowScrollController.offset -
-                                      _nowOffset())
+                                      _nowAnchorOffset())
                                   .abs() <
-                              30.0;
+                              _colWidth / 2;
                         }
 
                         return AnimatedOpacity(
@@ -761,18 +754,10 @@ class _DayFlowViewState extends State<DayFlowView>
                 onTap: _openAddTask,
               ),
               const SizedBox(width: 8),
-              _HoverDayButton(
-                onTap: () {
-                  if (_flowScrollController.hasClients) {
-                    final targetOffset = _getOptimalSnapOffset();
-                    _flowScrollController.animateTo(
-                      targetOffset.clamp(0.0, _hourCenter * 2 * _colWidth),
-                      duration: const Duration(milliseconds: 600),
-                      curve: Curves.easeOutCubic,
-                    );
-                  }
-                },
-              ),
+              // DAY returns you to the view the day OPENED with — same rule,
+              // same function. It used to run a second, different policy, so
+              // pressing it gave you a view you had never seen.
+              _HoverDayButton(onTap: () => _glideTo(_dayOpenOffset())),
             ],
           ),
         ),
@@ -1072,6 +1057,10 @@ class _DayFlowViewState extends State<DayFlowView>
 
     return DesktopScrollWrapper(
       scrollController: _flowScrollController,
+      // One notch, one hour. The ribbon comes to rest on an hour line every
+      // time, so the leading label is never sliced and "scroll back to where it
+      // was" is an exact, countable move.
+      snapExtent: _colWidth,
       child: ClipRect(
         key: _ribbonKey,
         child: Stack(
@@ -1660,14 +1649,20 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
     // We must rebuild if there are tasks (in any windowed day) OR a ghost task
     final hasGhost = widget.smartNotifier?.result.hasTime == true;
     final hasTasks = _tasksByOffset.values.any((l) => l.isNotEmpty);
-    if (!hasTasks && !hasGhost) return const SizedBox.shrink();
+    if (!hasTasks && !hasGhost) {
+      // Publish the empty truth too — a stale span list from the last day would
+      // have the ghost dodging blocks that are no longer on screen.
+      TimelineLayout.spans = const [];
+      return const SizedBox.shrink();
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        // ── Constants ──────────────────────────────────────────────────
-        const double blockH   = 36.0;  // fixed block height (premium compact)
-        const double rowGap   = 5.0;   // vertical gap between rows
-        const double topPad   = 44.0;  // clear the hour label row
+        // Block geometry lives in TimelineMath — the drop ghost is laid out by
+        // the same numbers, so it cannot promise a row this layer won't give.
+        const double blockH = TimelineMath.blockH;
+        const double rowGap = TimelineMath.rowGap;
+        const double topPad = TimelineMath.topPad;
 
         // ── Compute pixel geometry for each task across the 3-day window ──
         // Each task is positioned by ITS OWN day's offset from zeroDate (#F/#4),
@@ -1690,7 +1685,10 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
             final colIndex       = (startMins / 60).floor() + widget.hourCenter + dayOffset * 24;
             final minuteFraction = (startMins % 60) / 60.0;
             final left  = (colIndex + minuteFraction) * widget.colWidth;
-            final width = (durationMins / 60.0) * widget.colWidth;
+            // The width it OCCUPIES, min-clamp included — packing and pixels
+            // must be the same number, or short blocks share a row and then
+            // overlap on screen.
+            final width = TimelineMath.blockWidth(durationMins);
             geoms.add(_BlockGeometry(task: effTask, left: left, width: width, isGhost: false));
           }
         });
@@ -1706,7 +1704,7 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
           final colIndex = (startMins / 60).floor() + widget.hourCenter + centerOffset * 24;
           final minuteFraction = (startMins % 60) / 60.0;
           final left = (colIndex + minuteFraction) * widget.colWidth;
-          final width = (durationMins / 60.0) * widget.colWidth;
+          final width = TimelineMath.blockWidth(durationMins);
 
           final ghostTask = RustTask(
             id: 'ghost',
@@ -1741,9 +1739,9 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
           for (final g in geoms)
             LaneSpan(g.left, g.width,
                 id: g.task.id,
-                pref: g.isGhost ? null : TimelineLanePrefs.of(g.task.id))
+                pref: g.isGhost ? null : TimelineLayout.of(g.task.id))
         ];
-        
+
         int? pinnedIndex;
         if (freeze) {
           final resizingId = _resizingTask!.id;
@@ -1756,10 +1754,20 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
         final laneIds = <String>{};
         for (var i = 0; i < geoms.length; i++) {
           if (geoms[i].isGhost) continue;
-          TimelineLanePrefs.set(geoms[i].task.id, rowIndex[i]);
+          TimelineLayout.set(geoms[i].task.id, rowIndex[i]);
           laneIds.add(geoms[i].task.id);
         }
-        TimelineLanePrefs.retain(laneIds);
+        TimelineLayout.retain(laneIds);
+        // PUBLISH the layout, rows and all. The drop ghost reads exactly this —
+        // it no longer derives a second picture from TaskState, so it cannot
+        // disagree with what is on screen. The typing ghost is left out: it is
+        // not a task and a drop must not dodge it.
+        TimelineLayout.spans = [
+          for (var i = 0; i < geoms.length; i++)
+            if (!geoms[i].isGhost)
+              LaneSpan(geoms[i].left, geoms[i].width,
+                  id: geoms[i].task.id, pref: rowIndex[i])
+        ];
 
         // ── Build Positioned widgets ───────────────────────────────────
         final widgets = <Widget>[];
@@ -1770,7 +1778,9 @@ class _TimelineBlockLayerState extends State<_TimelineBlockLayer> {
           final isExpanded = _expandedTaskId == g.task.id;
           final top  = topPad + rowIndex[i] * (blockH + rowGap);
 
-          final targetWidth = isExpanded ? math.max(g.width, 260.0) : g.width.clamp(48.0, double.infinity);
+          // g.width already carries the min-block clamp (TimelineMath.blockWidth),
+          // which is why the packer above saw the same pixels this paints.
+          final targetWidth = isExpanded ? math.max(g.width, 260.0) : g.width;
           final targetHeight = isExpanded ? 72.0 : blockH;
           final targetTop = isExpanded ? top - (72.0 - blockH) / 2 : top;
 
@@ -1961,22 +1971,53 @@ class _RenderUnboundedHitStack extends RenderStack {
 // all mutate under the zone), never at registration.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// In-memory row memory for timeline blocks. The block layer writes each
-/// block's current row here every frame; an active edge-resize then reads it
-/// back as a `pref` to FREEZE neighbours on the rows they already hold, so a
-/// width change never reshuffles them. Row is layout, not data — never
-/// persisted, pruned to the visible window.
-class TimelineLanePrefs {
+/// The timeline's ONE live layout model.
+///
+/// The block layer publishes what it is holding — every block's span WITH its
+/// sticky row — at the end of each build; everything else (the drop ghost, the
+/// drop itself) reads it instead of deriving a second, slightly different
+/// picture from TaskState. Sharing the input is what makes the ghost's promise
+/// and the block's landing the same computation rather than two that agree most
+/// of the time.
+///
+/// Row is layout, not data — never persisted, pruned to the visible window.
+class TimelineLayout {
   static final Map<String, int> _prefs = {};
+
+  /// Rows a drop has PROMISED but that no build has seen yet. The dropped task
+  /// is hidden until its preview finishes settling, so it misses the builds in
+  /// between — and a plain `retain` would prune the promise before it was ever
+  /// used, dropping the block onto "first free row" instead of the row the
+  /// ghost showed.
+  static final Set<String> _reserved = {};
+
+  /// Spans exactly as the block layer laid them out this frame.
+  static List<LaneSpan> spans = const [];
+
   static int? of(String taskId) => _prefs[taskId];
   static void set(String taskId, int lane) => _prefs[taskId] = lane;
-  static void retain(Set<String> ids) =>
-      _prefs.removeWhere((k, _) => !ids.contains(k));
+
+  /// Hold [lane] for [taskId] until a build actually places it there.
+  static void reserve(String taskId, int lane) {
+    _prefs[taskId] = lane;
+    _reserved.add(taskId);
+  }
+
+  static void retain(Set<String> ids) {
+    _reserved.removeAll(ids); // these arrived — the promise has been kept
+    _prefs.removeWhere((k, _) => !ids.contains(k) && !_reserved.contains(k));
+  }
+
+  @visibleForTesting
+  static void debugReset() {
+    _prefs.clear();
+    _reserved.clear();
+    spans = const [];
+  }
 }
 
 class _TimelineRibbonZone extends DropZone {
   static const String zoneId = 'ribbon';
-  static const double _blockH = 36.0, _rowGap = 5.0, _topPad = 44.0;
   final _DayFlowViewState state;
   _TimelineRibbonZone(this.state);
 
@@ -2012,67 +2053,54 @@ class _TimelineRibbonZone extends DropZone {
     return TimelineMath.snap(TimelineMath.pxToMinutes(px));
   }
 
-  /// Existing lane spans in the 3-day window around [snapped] (dragged/hidden
-  /// task excluded), plus the probe span for the payload.
-  (List<LaneSpan>, LaneSpan) _spans(int snapped, DragPayload p) {
-    final ts = state.widget.taskState;
-    final spans = <LaneSpan>[];
-    final probe = LaneSpan(TimelineMath.minutesToPx(snapped),
-        p.durationMinutes / 60.0 * TimelineMath.colWidth);
-    if (ts == null) return (spans, probe);
-    final split = TimelineMath.splitDay(snapped);
-    final targetDay =
-        TimelineMath.dayFromOffset(state._zeroDate, split.dayOffset);
+  /// The blocks the ribbon is ACTUALLY holding — read straight off the layout
+  /// the block layer published this frame, with the dragged task removed.
+  ///
+  /// It used to re-derive these from TaskState, and without each block's sticky
+  /// `pref`. Since the packer processes by `pref` first, the two pictures could
+  /// come out mirrored: the ghost then measured room on the wrong row, drew
+  /// itself over a real block, and the drop landed a row away from where the
+  /// preview had flown. Reading the published layout makes agreement structural.
+  List<LaneSpan> _existingSpans(DragPayload p) {
     final hidden = DragSession.instance.hiddenTaskId.value;
-    for (var d = -1; d <= 1; d++) {
-      final day = DateTime(targetDay.year, targetDay.month, targetDay.day + d);
-      final dayOffset =
-          (day.difference(state._zeroDate).inHours / 24).round();
-      for (final t
-          in ts.tasksForDateNotifier(day.millisecondsSinceEpoch).value) {
-        if (t.startTime == null) continue;
-        if (t.id == hidden || t.id == p.task.id) continue;
-        final dur = t.endTime != null
-            ? (t.endTime! - t.startTime!).clamp(15, 23 * 60)
-            : 60;
-        spans.add(LaneSpan(
-          (TimelineMath.hourCenter + dayOffset * 24) * TimelineMath.colWidth +
-              t.startTime! * TimelineMath.colWidth / 60.0,
-          dur / 60.0 * TimelineMath.colWidth,
-          id: t.id, // same stable (left,id) order the block layer packs with
-        ));
-      }
-    }
-    return (spans, probe);
+    return [
+      for (final s in TimelineLayout.spans)
+        if (s.id != hidden && s.id != p.task.id) s
+    ];
   }
 
-  /// Lane the drop will land on: the free lane NEAREST the cursor's vertical
-  /// position, bounded to the stack that actually overlaps the slot (so the
-  /// ghost follows the pointer up/down instead of being stuck on the top row,
-  /// but never floats on an empty lane below a lone block).
-  int _placementLane(int snapped, Offset globalPos, DragPayload p) {
-    final (spans, probe) = _spans(snapped, p);
-    // gap:0 → same overlap rule the block layer packs with: touching in time is
-    // NOT an overlap, so the ghost matches the real landing row exactly.
-    var overlap = 0;
-    for (final s in spans) {
-      if (probe.left < s.left + s.width && s.left < probe.left + probe.width) {
-        overlap++;
-      }
-    }
+  /// The row the cursor's height is asking for (the packer decides what it can
+  /// honour). Measured at the block's MIDDLE, so pointing at a row means it.
+  int _desiredLane(Offset globalPos) {
     final box = _box;
-    var desired = 0;
-    if (box != null) {
-      final localY = box.globalToLocal(globalPos).dy;
-      desired =
-          ((localY - _topPad - _blockH / 2) / (_blockH + _rowGap)).round();
-      if (desired < 0) desired = 0;
-    }
-    return TimelineMath.laneNearest(spans, probe, desired,
-        gap: 0, maxLanes: overlap + 1);
+    if (box == null) return 0;
+    final localY = box.globalToLocal(globalPos).dy;
+    final lane = ((localY - TimelineMath.topPad - TimelineMath.blockH / 2) /
+            (TimelineMath.blockH + TimelineMath.rowGap))
+        .round();
+    return lane < 0 ? 0 : lane;
   }
 
-  double _ghostTop(int lane) => _topPad + lane * (_blockH + _rowGap);
+  /// Probe carrying the payload's real footprint. Same id as the task it will
+  /// become, so the packer's id tie-break resolves identically before and after
+  /// the drop.
+  LaneSpan _probe(int snapped, DragPayload p, int desiredLane) => LaneSpan(
+        TimelineMath.minutesToPx(snapped),
+        TimelineMath.blockWidth(p.durationMinutes),
+        id: p.task.id,
+        pref: desiredLane,
+      );
+
+  /// Lane the drop will land on — the answer of the SAME packer, over the SAME
+  /// spans, that the block layer will run a frame later. gap:0 mirrors the layer:
+  /// blocks that merely touch in time share a row.
+  int _placementLane(int snapped, Offset globalPos, DragPayload p) {
+    final desired = _desiredLane(globalPos);
+    return TimelineMath.laneForDrop(
+        _existingSpans(p), _probe(snapped, p, desired));
+  }
+
+  double _ghostTop(int lane) => TimelineMath.laneTop(lane);
 
   @override
   DropHover? hoverAt(Offset globalPos, DragPayload p) {
@@ -2095,7 +2123,9 @@ class _TimelineRibbonZone extends DropZone {
     if (ts == null || snapped == null) return null;
     final split = TimelineMath.splitDay(snapped);
     final day = TimelineMath.dayFromOffset(state._zeroDate, split.dayOffset);
-    final lane = _placementLane(snapped, globalPos, p);
+    final desired = _desiredLane(globalPos);
+    final lane =
+        TimelineMath.laneForDrop(_existingSpans(p), _probe(snapped, p, desired));
 
     final s = p.task.startTime;
     final e = p.task.endTime;
@@ -2107,24 +2137,32 @@ class _TimelineRibbonZone extends DropZone {
     } else {
       endMin = null; // open-ended stays open — don't materialize a duration
     }
-    // No lane pref needed: the block layer packs with the SAME stable, compact
-    // assignment the ghost previewed, so the real block lands on the ghost's row.
+    // Hand the layer the SAME pref the ghost was resolved with, BEFORE the
+    // mutation — so its very first pack reproduces the exact assignment the
+    // preview just showed and the block appears under the settled card instead
+    // of dropping onto whatever row came first. Reserved, not merely set: the
+    // task stays hidden until the settle ends, so it misses the builds in
+    // between and a plain retain() would prune the promise before it was used.
+    //
+    // The RESOLVED row, not the cursor's raw wish: handing back the wish would
+    // let the layer place this block ahead of the ones already sitting there
+    // (placement is pref-ordered) and shove them aside — the very thing
+    // laneForDrop refused to do.
+    TimelineLayout.reserve(p.task.id, lane);
     ts.scheduleAt(p.task, day, split.minuteOfDay, endMin);
 
     final box = _box;
     if (box == null) return const DropResult(refineToCard: false);
     final localX =
         TimelineMath.minutesToPx(snapped) - state._flowScrollController.offset;
-    final width =
-        math.max(48.0, p.durationMinutes / 60.0 * TimelineMath.colWidth);
+    final width = TimelineMath.blockWidth(p.durationMinutes);
     return DropResult(
       // Lane-honest landing: the preview settles into the EXACT slot the block
       // layer will place the task in (same lane pref) — deterministic geometry,
       // not a wrapped list card, so no card-rect refinement.
       refineToCard: false,
-      settleGlobalRect:
-          box.localToGlobal(Offset(localX, _ghostTop(lane))) &
-              Size(width, 36.0),
+      settleGlobalRect: box.localToGlobal(Offset(localX, _ghostTop(lane))) &
+          Size(width, TimelineMath.blockH),
     );
   }
 }
@@ -2241,9 +2279,8 @@ class _TimelineGhostLayer extends StatelessWidget {
               final left =
                   TimelineMath.minutesToPx(h.snappedMinutesFromZero!) -
                       scrollController.offset;
-              final width = math.max(
-                  48.0, payload.durationMinutes / 60.0 * TimelineMath.colWidth);
-              final top = h.ghostTop ?? 44.0;
+              final width = TimelineMath.blockWidth(payload.durationMinutes);
+              final top = h.ghostTop ?? TimelineMath.topPad;
               return Stack(
                 clipBehavior: Clip.none,
                 children: [
@@ -2251,7 +2288,7 @@ class _TimelineGhostLayer extends StatelessWidget {
                     left: left,
                     top: top,
                     width: width,
-                    height: 36,
+                    height: TimelineMath.blockH,
                     child: Container(
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.09),

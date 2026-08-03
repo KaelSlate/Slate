@@ -495,6 +495,10 @@ class WeekTacticsViewState extends State<WeekTacticsView> {
                 child: DayCellDropTarget(
                   date: cellDate,
                   taskState: widget.taskState,
+                  // Top of the column's task list. Honest ONLY because the
+                  // day's head is a fixed height — the progress ring's slot is
+                  // reserved whether or not the day holds anything (see
+                  // _buildColumnContent). Change the head, change this.
                   settleTopOffset: 96,
                   settleHeight: 32,
                   // Match _HoverGlowBackground's visible frame exactly —
@@ -701,13 +705,24 @@ class _DayColumnState extends State<_DayColumn> {
                               ),
                             ),
                           ),
-                          if (taskCount > 0) ...[
-                            const SizedBox(height: 7),
-                            QuietProgressRing(
+                          // The ring's slot is ALWAYS reserved, whether or not
+                          // the day holds anything. The head has to be a FIXED
+                          // height: the "Anytime" rail is pinned to a constant
+                          // offset from the cell's top (settleTopOffset), so a
+                          // head that shrank by these 17px on an empty day put
+                          // the rail straight on top of the first card — and,
+                          // once the drop landed, grew back and shoved the whole
+                          // list down a beat after the card settled. The ring
+                          // itself still renders nothing at zero tasks (see
+                          // QuietProgressRing), so an empty day stays empty.
+                          const SizedBox(height: 7),
+                          SizedBox(
+                            height: 10,
+                            child: QuietProgressRing(
                                 completed: completedCount,
                                 total: taskCount,
                                 size: 10),
-                          ],
+                          ),
                         ],
                       ),
                     ),

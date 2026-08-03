@@ -61,17 +61,30 @@ foreach ($d in $vc) {
 }
 
 # -- 4. Compile the installer ------------------------------------------------
-Step "4/5  Inno Setup (ISCC)"
+Step "4/6  Inno Setup (ISCC)"
 & $iscc "/DMyAppVersion=$version" "$root\installer\slate.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 $setup = "$root\Releases\Slate_Setup_v$version.exe"
 if (-not (Test-Path $setup)) { throw "installer not produced: $setup" }
 
-# -- 5. Done -----------------------------------------------------------------
-Step "5/5  Done"
+# -- 5. Archive the raw bundle (DEPLOYS.md law) -------------------------------
+# Done here, not by hand: v1.1.4 has no folder in Releases because the manual
+# copy was simply forgotten.
+Step "5/6  Archive bundle -> Releases\slate_v$version"
+$bundle = "$root\Releases\slate_v$version"
+if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
+Copy-Item $release $bundle -Recurse -Force
+if (-not (Test-Path "$bundle\slate.exe")) { throw "bundle copy failed: $bundle" }
+Write-Host "  bundle -> $bundle" -ForegroundColor Green
+
+# -- 6. Done -----------------------------------------------------------------
+Step "6/6  Done"
 $mb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
 Write-Host "  OUTPUT: $setup  ($mb MB)" -ForegroundColor Green
+Write-Host "  BUNDLE: $bundle" -ForegroundColor Green
 Write-Host ""
+Write-Host "NEXT: refresh the stable-name copy the landing page links to:" -ForegroundColor Yellow
+Write-Host "      Copy-Item '$setup' '$root\Releases\Slate_Setup.exe' -Force" -ForegroundColor Yellow
 Write-Host "NEXT: run the setup through https://www.virustotal.com before sharing." -ForegroundColor Yellow
 Write-Host "      (global hotkey + HKCU autostart + DLLs look like spyware to AV heuristics;" -ForegroundColor Yellow
 Write-Host "       submit free false-positive reports to any vendor that flags it.)" -ForegroundColor Yellow

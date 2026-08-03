@@ -158,6 +158,12 @@ class _DayCellDropTargetState extends State<DayCellDropTarget>
   /// the cell's content, so the "show the future" preview can never move the
   /// line that decides the preview. That is what retires the flicker/teleport
   /// loop for good.
+  ///
+  /// The constant carries one duty in return: **the host's day head must be a
+  /// FIXED height.** Week and month both used to hide their progress ring /
+  /// completion dots on an empty day, so the head shrank by 17px / 7px and the
+  /// list rose under a rail that had not moved — the rail sat on the first card
+  /// exactly when there was only one. Both heads now reserve the slot.
   double get _railTopLocal => widget.settleTopOffset;
 
   static String _fmt(int m) =>

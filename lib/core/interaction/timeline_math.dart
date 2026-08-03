@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 /// Pure geometry for the day-view hour ribbon (100 px = 1 hour, hourCenter =
 /// column index of zeroDate 00:00). Exact inverse of _TimelineBlockLayer's
 /// layout math in day_flow_view.dart — keep the two in lockstep.
@@ -5,6 +7,27 @@ class TimelineMath {
   static const double colWidth = 100.0;
   static const int hourCenter = 2400;
   static const int snapStep = 15;
+
+  // ── Block geometry — ONE set of numbers ───────────────────────────────────
+  // These used to be duplicated in _TimelineBlockLayer and _TimelineRibbonZone.
+  // The ghost and the block it promises must be laid out by the same constants
+  // or the preview lies by a row.
+  static const double blockH = 36.0;
+  static const double rowGap = 5.0;
+  static const double topPad = 44.0; // clears the hour-label row
+
+  /// A block narrower than this is unreadable, so it is drawn at [minBlockWidth]
+  /// whatever its duration.
+  static const double minBlockWidth = 48.0;
+
+  /// Width a block OCCUPIES — pixels and lane packing must agree on it. Packing
+  /// with the true duration while painting the clamped minimum is how two
+  /// 15-minute blocks got the same row and then overlapped on screen.
+  static double blockWidth(int durationMinutes) =>
+      math.max(minBlockWidth, durationMinutes / 60.0 * colWidth);
+
+  /// Ribbon-local top of a lane.
+  static double laneTop(int lane) => topPad + lane * (blockH + rowGap);
 
   /// Absolute ribbon px (local x + scrollOffset) → continuous minutes from
   /// zeroDate 00:00. Negative = days before zeroDate.
@@ -65,13 +88,13 @@ class TimelineMath {
       laneIntervals[r].add(_Interval(spans[i].left, spans[i].left + spans[i].width));
     }
 
-    // Determine processing order
-    final order = List<int>.generate(spans.length, (i) => i);
+    // Determine processing order. The pinned span is lifted OUT of the sort and
+    // put at the front — deciding it inside the comparator is not a strict weak
+    // ordering (it answers -1 for both operands when they are the same element),
+    // which a sort is entitled to make a mess of.
+    final order = List<int>.generate(spans.length, (i) => i)
+      ..removeWhere((i) => i == pinnedIndex);
     order.sort((a, b) {
-      // 1. Pinned always first
-      if (a == pinnedIndex) return -1;
-      if (b == pinnedIndex) return 1;
-
       final spanA = spans[a];
       final spanB = spans[b];
 
@@ -93,6 +116,11 @@ class TimelineMath {
       }
       return 0;
     });
+    if (pinnedIndex != null &&
+        pinnedIndex >= 0 &&
+        pinnedIndex < spans.length) {
+      order.insert(0, pinnedIndex); // placed first, keeps its row, bumps others
+    }
 
     for (final i in order) {
       final g = spans[i];
@@ -137,48 +165,55 @@ class TimelineMath {
     return lanes;
   }
 
-  /// Which lane the assignment gives the probe span among the existing ones.
-  /// Honest drop preview: the ghost sits exactly where the block will land.
-  static int laneForProbe(List<LaneSpan> existing, LaneSpan probe,
-      {double gap = 5.0}) {
-    final all = [...existing, probe]..sort(laneOrder);
-    final lanes = assignLanes(all, gap: gap);
-    for (var i = 0; i < all.length; i++) {
-      if (identical(all[i], probe)) return lanes[i];
-    }
-    return 0;
-  }
+  /// THE drop preview: the row a dropped block will occupy among [existing].
+  ///
+  /// Three things make the ghost's promise binding, and all three were broken:
+  ///
+  /// 1. **The rows it measures against are the rows on screen.** [existing]
+  ///    carries each block's sticky `pref`, so [assignLanes] here reproduces the
+  ///    live layout exactly. The old second packer (`laneNearest`) re-derived
+  ///    them from scratch WITHOUT prefs — and since placement is pref-ordered, a
+  ///    sticky layout and a fresh one can come out mirrored. The ghost then
+  ///    measured the wrong row, drew itself over a real block, and the drop
+  ///    landed a row away from where the preview had flown.
+  /// 2. **A drop asks for a row, it does not take one.** The probe is fitted
+  ///    AFTER everyone else and never displaces a block: pointing at an occupied
+  ///    row means "near here", not "move over". Feeding the probe through
+  ///    [assignLanes] as a peer let it evict whatever sat where the cursor was —
+  ///    the ghost drew straight onto that block, and on release the block it
+  ///    shoved slid away underneath. Only a RESIZE may bump neighbours, and that
+  ///    is what `pinnedIndex` is for.
+  /// 3. **The caller hands the answer back** as the dropped task's `pref`, so
+  ///    the layer's next pack reproduces this row rather than first-fitting.
+  ///
+  /// The search itself is the same rule [assignLanes] applies to any span:
+  /// compact into a free row ABOVE the wish, else take the wish, else the first
+  /// free row below. So a lone block never floats under an empty row just
+  /// because the pointer was low.
+  static int laneForDrop(List<LaneSpan> existing, LaneSpan probe,
+      {double gap = 0}) {
+    final rows = assignLanes(existing, gap: gap);
 
-  /// The free lane NEAREST to [desired] for [probe], searching outward among
-  /// the already-assigned [existing] spans — the ghost follows the cursor's
-  /// vertical position but never lies down on top of another block.
-  /// [maxLanes] caps the search to lanes that actually fit the ribbon.
-  static int laneNearest(List<LaneSpan> existing, LaneSpan probe, int desired,
-      {double gap = 5.0, int maxLanes = 1}) {
-    final cap = maxLanes < 1 ? 1 : maxLanes;
-    final want = desired.clamp(0, cap - 1);
-    final sorted = [...existing]..sort(laneOrder);
-    final lanes = assignLanes(sorted, gap: gap);
-    bool collides(int lane) {
-      for (var i = 0; i < sorted.length; i++) {
-        if (lanes[i] != lane) continue;
-        final s = sorted[i];
+    bool free(int r) {
+      for (var i = 0; i < existing.length; i++) {
+        if (rows[i] != r) continue;
+        final s = existing[i];
         if (probe.left < s.left + s.width + gap &&
             s.left < probe.left + probe.width + gap) {
-          return true;
+          return false;
         }
       }
-      return false;
+      return true;
     }
 
-    if (!collides(want)) return want;
-    for (var d = 1; d < cap; d++) {
-      final below = want + d;
-      if (below < cap && !collides(below)) return below;
-      final above = want - d;
-      if (above >= 0 && !collides(above)) return above;
+    final wish = (probe.pref ?? 0) < 0 ? 0 : (probe.pref ?? 0);
+    for (var r = 0; r < wish; r++) {
+      if (free(r)) return r;
     }
-    return want;
+    if (free(wish)) return wish;
+    for (var r = wish + 1;; r++) {
+      if (free(r)) return r;
+    }
   }
 
   /// Canonical span ordering for lane assignment: left-to-right, equal left →

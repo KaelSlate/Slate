@@ -1007,7 +1007,10 @@ class _MonthPageState extends State<_MonthPage>
     return DayCellDropTarget(
       date: date,
       taskState: widget.taskState,
-      settleTopOffset: 34,
+      // The head is a fixed height (day number + the always-reserved dots row),
+      // so this lands the rail's top EXACTLY on the task list's top: 10 + 15
+      // (number) + 4 + 3 (dots slot) + 4 = 36. One number, honest on every day.
+      settleTopOffset: 36,
       settleHeight: 24,
       // Shorter rail — a month cell is ~90px wide. It overlays the «+N more»
       // line, which means nothing mid-drag anyway.
@@ -1107,10 +1110,16 @@ class _MonthPageState extends State<_MonthPage>
                             ),
                           ),
                         ),
-                        // Completion dots
-                        if (totalTasks > 0) ...[
-                          const SizedBox(height: 4),
-                          IgnorePointer(
+                        // Completion dots — the slot is ALWAYS reserved, empty
+                        // day or not. The "Anytime" rail hangs off a constant
+                        // offset from the cell's top (settleTopOffset), so a
+                        // head that shrank by these 7px on an empty day landed
+                        // the rail inside the card list. Same law as the week's
+                        // progress ring: the day's head is a FIXED height.
+                        const SizedBox(height: 4),
+                        SizedBox(
+                          height: 3,
+                          child: IgnorePointer(
                             child: Padding(
                               padding: const EdgeInsets.only(left: 14),
                               child: Row(
@@ -1134,7 +1143,7 @@ class _MonthPageState extends State<_MonthPage>
                               ),
                             ),
                           ),
-                        ],
+                        ),
 
                         // Phase 5: Task list
                         if (showTitles) ...[

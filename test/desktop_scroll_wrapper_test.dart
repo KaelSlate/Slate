@@ -37,6 +37,39 @@ Future<void> wheelDown(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+/// The day ribbon: a horizontal list of 100px hour columns, wheel-snapped to
+/// whole columns so the leading hour label is never sliced in half.
+const double kCol = 100;
+
+Widget ribbonHarness(ScrollController sc) => MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 400,
+          height: 200,
+          child: DesktopScrollWrapper(
+            scrollController: sc,
+            snapExtent: kCol,
+            child: ListView.builder(
+              controller: sc,
+              scrollDirection: Axis.horizontal,
+              itemExtent: kCol,
+              itemCount: 200,
+              itemBuilder: (_, i) => Center(child: Text('h-$i')),
+            ),
+          ),
+        ),
+      ),
+    );
+
+Future<void> ribbonWheel(WidgetTester tester, double dy,
+    {bool settle = true}) async {
+  final pointer = TestPointer(1, PointerDeviceKind.mouse);
+  final center = tester.getCenter(find.byType(ListView));
+  await tester.sendEventToBinding(pointer.hover(center));
+  await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
+  if (settle) await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('a wheel tick pages when not paused', (tester) async {
     final pc = PageController(initialPage: 5);
@@ -68,5 +101,61 @@ void main() {
     paused.value = false;
     await wheelDown(tester);
     expect(pc.page!.round(), 6);
+  });
+
+  group('snapExtent — the ribbon ticks in whole hours', () {
+    testWidgets('one notch moves exactly one column, and lands ON the line',
+        (tester) async {
+      final sc = ScrollController(initialScrollOffset: 5 * kCol);
+      addTearDown(sc.dispose);
+      await tester.pumpWidget(ribbonHarness(sc));
+      await tester.pumpAndSettle();
+
+      await ribbonWheel(tester, 120);
+      expect(sc.offset, 6 * kCol);
+
+      await ribbonWheel(tester, -120);
+      expect(sc.offset, 5 * kCol);
+    });
+
+    testWidgets('rapid notches accumulate instead of restarting', (tester) async {
+      final sc = ScrollController(initialScrollOffset: 5 * kCol);
+      addTearDown(sc.dispose);
+      await tester.pumpWidget(ribbonHarness(sc));
+      await tester.pumpAndSettle();
+
+      // Three notches before the glide finishes → three hours, not one.
+      await ribbonWheel(tester, 120, settle: false);
+      await tester.pump(const Duration(milliseconds: 20));
+      await ribbonWheel(tester, 120, settle: false);
+      await tester.pump(const Duration(milliseconds: 20));
+      await ribbonWheel(tester, 120);
+      expect(sc.offset, 8 * kCol);
+    });
+
+    testWidgets('an off-grid start is pulled back onto the hour line',
+        (tester) async {
+      // An edge-pan during a drag can leave the ribbon mid-column; the next
+      // notch must land whole, not carry the bad phase forward forever.
+      final sc = ScrollController(initialScrollOffset: 5 * kCol + 37);
+      addTearDown(sc.dispose);
+      await tester.pumpWidget(ribbonHarness(sc));
+      await tester.pumpAndSettle();
+
+      await ribbonWheel(tester, 120);
+      expect(sc.offset % kCol, 0);
+      expect(sc.offset, 6 * kCol);
+    });
+
+    testWidgets('it will not scroll past the start of the ribbon',
+        (tester) async {
+      final sc = ScrollController();
+      addTearDown(sc.dispose);
+      await tester.pumpWidget(ribbonHarness(sc));
+      await tester.pumpAndSettle();
+
+      await ribbonWheel(tester, -120);
+      expect(sc.offset, 0);
+    });
   });
 }

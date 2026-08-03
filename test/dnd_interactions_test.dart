@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:slate/core/engine/slate_core_bridge.dart';
 import 'package:slate/core/interaction/drag_session.dart';
+import 'package:slate/core/interaction/timeline_math.dart';
 import 'package:slate/core/state/task_state.dart';
 import 'package:slate/ui/overlays/drag_preview_layer.dart';
 import 'package:slate/ui/views/day_flow_view.dart';
@@ -269,6 +270,149 @@ void main() {
     t = taskByTitle('cardpane');
     expect(t.startTime, isNull);
     expect(DragSession.instance.phase, DragPhase.idle);
+    await teardownHarness(tester);
+  });
+
+  group('the ribbon opens on a whole hour, the same way every time', () {
+    /// The ribbon's live scroll offset — the number the whole complaint is
+    /// about. Hour columns are 100px, so a hour-aligned view is offset % 100 == 0
+    /// and anything else slices the leading hour label through its digits.
+    double ribbonOffset(WidgetTester tester) {
+      for (final e in find.byType(Scrollable).evaluate()) {
+        final st = (e as StatefulElement).state as ScrollableState;
+        if (st.position.axis == Axis.horizontal) return st.position.pixels;
+      }
+      fail('the ribbon has no horizontal scrollable');
+    }
+
+    /// Offset that puts the column holding [minuteOfDay] flush at the left edge.
+    double columnAt(int minuteOfDay) =>
+        (TimelineMath.hourCenter + minuteOfDay ~/ 60) * TimelineMath.colWidth;
+
+    testWidgets('a day with tasks opens on the earliest hour, minus lead-in',
+        (tester) async {
+      for (final t in List.of(ts.tasks)) {
+        ts.deleteTask(t);
+      }
+      await ts.createTask('anchor', day.millisecondsSinceEpoch);
+      ts.updateTask(
+          taskByTitle('anchor').copyWith(startTime: 495, endTime: 540)); // 08:15
+      await ts.createTask('later', day.millisecondsSinceEpoch);
+      ts.updateTask(
+          taskByTitle('later').copyWith(startTime: 1140, endTime: 1200));
+
+      await pumpHarness(tester);
+      // 08:15 → the 08:00 column, one hour of lead-in → 07:00 at the left edge.
+      expect(ribbonOffset(tester), columnAt(7 * 60));
+      expect(ribbonOffset(tester) % TimelineMath.colWidth, 0);
+
+      // Re-enter: identical framing. The rule reads the earliest task and
+      // nothing else.
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 50));
+      await pumpHarness(tester);
+      expect(ribbonOffset(tester), columnAt(7 * 60));
+
+      // A task added ELSEWHERE in the day must not re-aim the morning — the old
+      // "densest viewport window" search moved the whole view for this.
+      await ts.createTask('noise', day.millisecondsSinceEpoch);
+      ts.updateTask(
+          taskByTitle('noise').copyWith(startTime: 1320, endTime: 1380));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 50));
+      await pumpHarness(tester);
+      expect(ribbonOffset(tester), columnAt(7 * 60),
+          reason: 'a task at 22:00 has no business re-aiming the morning');
+
+      await teardownHarness(tester);
+    });
+
+    testWidgets('an empty day opens at 08:00', (tester) async {
+      for (final t in List.of(ts.tasks)) {
+        ts.deleteTask(t);
+      }
+      await pumpHarness(tester);
+      expect(ribbonOffset(tester), columnAt(8 * 60),
+          reason: 'an empty day looks the same wherever you meet it');
+      await teardownHarness(tester);
+    });
+  });
+
+  testWidgets(
+      'the ghost lands where it promised, on a layout the packer made sticky',
+      (tester) async {
+    // THE regression, end to end.
+    //
+    // Setup builds a perfectly ordinary — and mirrored — layout: a short block
+    // exists first and takes row 0; the long block added around it is pushed to
+    // row 1. A pref-less repack of the same two spans would come out the other
+    // way round (long→0, short→1), and that is precisely what the ghost used to
+    // compute. It then measured room on the wrong row, drew itself over the long
+    // block, and the drop landed a row away from where the preview had flown.
+    for (final t in List.of(ts.tasks)) {
+      ts.deleteTask(t);
+    }
+    await ts.createTask('short one', day.millisecondsSinceEpoch);
+    ts.updateTask(
+        taskByTitle('short one').copyWith(startTime: 600, endTime: 660));
+    await pumpHarness(tester); // packed alone → row 0, and it STAYS there
+
+    await ts.createTask('long one', day.millisecondsSinceEpoch);
+    ts.updateTask(
+        taskByTitle('long one').copyWith(startTime: 480, endTime: 720));
+    await ts.createTask('incoming', day.millisecondsSinceEpoch); // untimed
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(milliseconds: 120));
+    }
+
+    final shortRect = tester.getRect(blockFor('short one'));
+    final longRect = tester.getRect(blockFor('long one'));
+    expect(longRect.top, greaterThan(shortRect.top),
+        reason: 'setup must produce the mirrored layout, or this proves nothing');
+
+    // Row 0's top in global coordinates, read off the block that holds it.
+    final ribbonTop = shortRect.top - TimelineMath.topPad;
+
+    // Drag the untimed card out of the pane onto 11:30, pointing at ROW 0 —
+    // which is free there (the short block ends at 11:00) but which the old
+    // ghost believed the long block occupied.
+    final card = find.widgetWithText(HoverTaskCard, 'incoming');
+    expect(card, findsOneWidget);
+    final from = tester.getCenter(card);
+    // x(minute) derived from a block whose minute is known: 08:00 at longRect.left.
+    final targetX =
+        longRect.left + (690 - 480) / 60.0 * TimelineMath.colWidth;
+    final targetY = ribbonTop + TimelineMath.topPad + TimelineMath.blockH / 2;
+
+    final g = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await g.addPointer(location: from);
+    await g.down(from);
+    await tester.pump();
+    await g.moveBy(const Offset(0, 8)); // lift
+    await tester.pump();
+    await g.moveTo(Offset(targetX, targetY));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final hover = DragSession.instance.hover.value;
+    expect(hover?.zoneId, 'ribbon');
+    final promisedTop = ribbonTop + hover!.ghostTop!;
+
+    await g.up();
+    await tester.pump(const Duration(milliseconds: 250)); // settle
+    await tester.pump(const Duration(milliseconds: 250)); // fade
+    await tester.pump(const Duration(milliseconds: 250));
+
+    final landed = tester.getRect(blockFor('incoming'));
+    expect(landed.top, closeTo(promisedTop, 0.5),
+        reason: 'the block must appear exactly where the ghost stood — '
+            'off by ${(landed.top - promisedTop).abs().toStringAsFixed(1)}px');
+
+    // And it took a free row rather than shoving anyone off theirs.
+    expect(tester.getRect(blockFor('short one')).top, closeTo(shortRect.top, 0.5),
+        reason: 'a drop asks for a row, it does not evict one');
+    expect(tester.getRect(blockFor('long one')).top, closeTo(longRect.top, 0.5),
+        reason: 'a drop asks for a row, it does not evict one');
+
     await teardownHarness(tester);
   });
 }
