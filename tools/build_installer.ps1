@@ -11,6 +11,19 @@ $root = Split-Path $PSScriptRoot -Parent   # project root (tools\ is one level d
 
 function Step($n) { Write-Host "`n=== $n ===" -ForegroundColor Cyan }
 
+# cargo, flutter and ISCC all write ordinary progress and warnings to stderr.
+# Under $ErrorActionPreference='Stop' PowerShell can turn that into a
+# TERMINATING error and the build dies on a `warning:` line having produced
+# nothing - it bit us on 2026-08-06 when the script was invoked with a `2>&1`
+# redirect. Judge a native tool by its EXIT CODE, never by whether it spoke on
+# stderr.
+function Invoke-Native([string]$what, [scriptblock]$cmd) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & $cmd } finally { $ErrorActionPreference = $prev }
+  if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" }
+}
+
 # -- Version from pubspec (1.1.3+12 -> 1.1.3) --------------------------------
 $verLine = Select-String -Path "$root\pubspec.yaml" -Pattern '^version:\s*(.+)$' | Select-Object -First 1
 if (-not $verLine) { throw "version: not found in pubspec.yaml" }
@@ -29,9 +42,7 @@ Write-Host "ISCC: $iscc" -ForegroundColor White
 # -- 1. Rust core (release) + DLL to project root (the DLL law) ---------------
 Step "1/5  Rust core (cargo build --release)"
 Push-Location "$root\native"
-cargo build --release
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw "cargo build failed" }
-Pop-Location
+try { Invoke-Native "cargo build" { cargo build --release } } finally { Pop-Location }
 Copy-Item "$root\native\target\release\slate_core.dll" "$root\slate_core.dll" -Force
 Write-Host "  slate_core.dll -> project root" -ForegroundColor Green
 
@@ -40,9 +51,11 @@ Step "2/5  flutter build windows --release --obfuscate"
 $symbols = "$root\symbols\v$version"
 New-Item -ItemType Directory -Path $symbols -Force | Out-Null
 Push-Location $root
-& flutter build windows --release --obfuscate --split-debug-info="symbols\v$version"
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw "flutter build failed" }
-Pop-Location
+try {
+  Invoke-Native "flutter build" {
+    & flutter build windows --release --obfuscate --split-debug-info="symbols\v$version"
+  }
+} finally { Pop-Location }
 $release = "$root\build\windows\x64\runner\Release"
 if (-not (Test-Path "$release\slate.exe")) { throw "release build missing: $release\slate.exe" }
 Write-Host "  keep symbols\v$version (tester crash logs need it)" -ForegroundColor Green
@@ -62,8 +75,7 @@ foreach ($d in $vc) {
 
 # -- 4. Compile the installer ------------------------------------------------
 Step "4/6  Inno Setup (ISCC)"
-& $iscc "/DMyAppVersion=$version" "$root\installer\slate.iss"
-if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+Invoke-Native "ISCC" { & $iscc "/DMyAppVersion=$version" "$root\installer\slate.iss" }
 $setup = "$root\Releases\Slate_Setup_v$version.exe"
 if (-not (Test-Path $setup)) { throw "installer not produced: $setup" }
 

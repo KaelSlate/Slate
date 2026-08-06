@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "sfx_player.h"
 
 namespace {
 
@@ -152,6 +153,8 @@ bool FlutterWindow::OnCreate() {
           result->NotImplemented();
         }
       });
+
+  sfx_channel_ = RegisterSfxChannel(flutter_controller_->engine()->messenger());
 
   // Shown IMMEDIATELY, not on the first frame: the window class now carries the
   // app's own warm-graphite brush (win32_window.cpp), so what appears instantly

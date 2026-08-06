@@ -10,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 import 'core/engine/quick_capture_controller.dart';
 import 'core/engine/spatial_zoom_engine.dart';
 import 'core/engine/tray_shell.dart';
+import 'core/sfx/sfx.dart';
 import 'core/state/app_dirs.dart';
 import 'core/state/crash_log.dart';
 import 'core/state/first_run.dart';
@@ -85,6 +86,11 @@ Future<void> _boot(List<String> args) async {
   // for the actual secret (the SQLCipher DB key).
   final fontsWarm = _warmFonts();
   final prefsLoad = LocalPrefs.load();
+
+  // Sound layer: opens the XAudio2 device and reads the saved mix. No-op in a
+  // normal Slate build. Not awaited — nothing on the first-frame path needs it,
+  // and Sfx stays silent until PulseLayer arms it after the warmup pass anyway.
+  unawaited(Sfx.init());
 
   // Start the Rust engine NOW (DLL load → SQLCipher open → task hydration),
   // concurrent with fonts/prefs/window init instead of after the first frame.

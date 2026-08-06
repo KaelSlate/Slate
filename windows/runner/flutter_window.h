@@ -56,6 +56,12 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       shell_channel_;
 
+  // slate/sfx — this engine's handle on the process-wide XAudio2 mixer. The
+  // pill's engine registers its own; both reach the same SfxPlayer, which is
+  // what lets sounds from the two windows overlap instead of cutting each other.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      sfx_channel_;
+
   // "Quit, a newer instance is taking over" (see main.cpp).
   UINT quit_handover_msg_ = 0;
 

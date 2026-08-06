@@ -6,6 +6,8 @@
 
 #include <optional>
 
+#include "sfx_player.h"
+
 #ifndef DWMWA_CLOAK
 #define DWMWA_CLOAK 13
 #endif
@@ -67,6 +69,11 @@ bool PillWindow::OnCreate() {
           result->NotImplemented();
         }
       });
+
+  // The pill's engine gets its own handle on the SAME process-wide mixer, so a
+  // sound raised here shares the voice pool with the main window's instead of
+  // cutting it off (see sfx_player.h on why this isn't a Dart package).
+  sfx_channel_ = RegisterSfxChannel(flutter_controller_->engine()->messenger());
 
   flutter_controller_->ForceRedraw();
   SetCloak(true);

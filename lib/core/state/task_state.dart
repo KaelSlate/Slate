@@ -7,6 +7,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../engine/capture_destination.dart';
 import '../engine/slate_core_bridge.dart';
 import '../interaction/delete_settle.dart';
+import '../sfx/sfx.dart';
 import 'app_dirs.dart';
 import 'backup_service.dart';
 import 'export_service.dart';
@@ -485,6 +486,10 @@ class TaskState extends ChangeNotifier {
   void toggleTask(RustTask task) {
     if (_vaultDown) return;
     final toggled = core.toggleTask(task);
+    // The chime marks an ACHIEVEMENT, so it fires in one direction only:
+    // un-ticking a task is not a small victory, and an undo (_undoing) is the
+    // user taking the moment back — both stay silent.
+    if (toggled.isCompleted && !_undoing) Sfx.taskDone();
     final idx = _tasks.indexWhere((t) => t.id == task.id);
     if (idx != -1) _tasks[idx] = toggled;
     _pushUndo(_UndoEntry.toggle(task.id));
