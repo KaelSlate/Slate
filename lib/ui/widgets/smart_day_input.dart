@@ -6,7 +6,6 @@ import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/engine/slate_core_bridge.dart';
-import '../../core/sfx/sfx.dart';
 import '../../core/theme/app_theme.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -203,7 +202,6 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
   /// Last [SmartInputNotifier.reveals] this field acted on — see _onNotifier.
   int _seenReveals = 0;
 
-
   @override
   void initState() {
     super.initState();
@@ -260,13 +258,6 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
         1.0,
         0.0,
       ));
-      // The in-app pills (day view, overview) are BUILT on each open, so the
-      // entrance sound belongs with the entrance spring right here. The
-      // floating one is a different story: it lives in the pill window and is
-      // mounted once for the whole process, so its summon sound is played by
-      // pill_window.dart's _reveal instead. Sfx.armed keeps the warmup pass —
-      // which also mounts one of these under the veil — silent.
-      Sfx.pillAppear();
     }
 
     // Acquire keyboard focus the instant the pill mounts so the caret blinks and
@@ -329,7 +320,6 @@ class _SmartDayInputWidgetState extends State<SmartDayInputWidget>
 
   void _onTextChanged() {
     final raw = _controller.text;
-
     if (raw.isEmpty) {
       final cleared = const ParseResult();
       if (_lastResult != cleared) {

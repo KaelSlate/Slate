@@ -57,11 +57,10 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 
 /////////////////////////////////////////////////////////////////////////////
 //
-// Sound effects (44.1 kHz / mono / 16-bit PCM — see sfx_player.cpp)
+// Completion chime (44.1 kHz / mono / 16-bit PCM — see sfx_player.cpp)
 //
 
 IDR_SFX_DONE            RCDATA                  "resources\\sfx\\notification.wav"
-IDR_SFX_PILL            RCDATA                  "resources\\sfx\\progress_loop.wav"
 
 
 /////////////////////////////////////////////////////////////////////////////

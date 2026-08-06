@@ -61,8 +61,6 @@ class PillWindow : public Win32Window {
   flutter::DartProject project_;
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
-  // slate/sfx on THIS engine — see flutter_window.h; one mixer, two engines.
-  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> sfx_channel_;
   std::function<void(const flutter::EncodableValue&)> capture_sink_;
   HWND prior_foreground_ = nullptr;  // app to restore focus to on dismiss
   int heal_phase_ = 0;               // 0 idle, 1 nudge due, 2 entrance due

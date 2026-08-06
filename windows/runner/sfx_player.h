@@ -14,17 +14,17 @@
 #include <vector>
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SFX PLAYER — one XAudio2 mixer for the whole PROCESS.
+// SFX PLAYER — the mixer behind Slate's one sound.
 //
-// Why native and not a pub.dev package: this process runs TWO Flutter engines
-// (the main window and the capture pill — see main.cpp). A Dart audio package
-// would have to be registered on both, giving two independent device sessions
-// that cannot mix with each other — the pill's entrance sound could never
-// overlap a chime from the main window, they would fight for the device. One
-// C++ mixer below both engines is the only way they share a voice pool.
+// Native rather than a pub.dev package for a concrete reason: this process
+// hosts TWO Flutter engines (the main window and the capture pill — see
+// main.cpp). A Dart audio plugin would have to be registered on both, giving
+// two independent device sessions that cannot mix with each other. One C++
+// mixer below both engines has no such seam, and costs less: no plugin
+// registration, no asset loading, no channel hop per sound.
 //
-// The clips are embedded in the exe as RCDATA (Runner.rc), so there is no file
-// I/O, no path resolution, and no way to ship a build with missing sounds.
+// The clip is embedded in the exe as RCDATA (Runner.rc), so there is no file
+// I/O, no path resolution, and no way to ship a build with the audio missing.
 // A resource is already mapped into the image, so `pcm` points straight at it:
 // zero copies, zero allocation on the hot path.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -38,12 +38,9 @@ class SfxPlayer {
   bool Init();
   void Shutdown();
 
-  // Fire and forget. Must never block the platform thread: a stalled call here
-  // would be a stutter in the UI that triggered the sound.
-  //   gain    linear 0..1 (already multiplied by the caller's master)
-  //   trim_ms 0 = play whole clip; >0 = play only the head, this long
-  //   fade_ms fade-out length applied at the end of the (trimmed) clip
-  void Play(const std::string& id, float gain, int trim_ms, int fade_ms);
+  // Fire and forget; `gain` is linear 0..1. Must never block the platform
+  // thread — a stall here would be a stutter in the UI that triggered it.
+  void Play(const std::string& id, float gain);
 
  private:
   SfxPlayer() = default;
@@ -53,21 +50,8 @@ class SfxPlayer {
 
   struct Clip {
     const int16_t* pcm = nullptr;  // into the RCDATA image — always valid
-    size_t frames = 0;
-
-    // Trim+fade is a different waveform, so it cannot be done by XAudio2 flags.
-    // We render it ONCE into `derived` and keep the parameters that produced
-    // it; a HUD tweak rebuilds it, playback reuses it. Never rebuilt on a
-    // keystroke-rate path (only progress_loop is ever trimmed).
-    std::vector<int16_t> derived;
-    int derived_trim_ms = -1;
-    int derived_fade_ms = -1;
+    size_t samples = 0;
   };
-
-  // Resolves `id` to the buffer/length to submit, building the trimmed variant
-  // on demand. Caller holds `lock_`.
-  bool ResolveBuffer(const std::string& id, int trim_ms, int fade_ms,
-                     const int16_t** out_pcm, size_t* out_frames);
 
   // Grab a free voice, or steal the oldest one. Caller holds `lock_`.
   IXAudio2SourceVoice* AcquireVoice();
@@ -84,9 +68,8 @@ class SfxPlayer {
   std::mutex lock_;
 };
 
-// Wire the `slate/sfx` channel onto an engine. Called for BOTH engines; they
-// share the single SfxPlayer above. The returned channel must outlive the
-// engine, so the caller stores it.
+// Wire the `slate/sfx` channel onto the main engine. The returned channel must
+// outlive that engine, so the caller stores it.
 std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
 RegisterSfxChannel(flutter::BinaryMessenger* messenger);
 

@@ -12,7 +12,6 @@ import '../../core/engine/quick_capture_controller.dart';
 import '../../core/engine/capture_destination.dart';
 import '../../core/engine/spatial_zoom_engine.dart';
 import '../../core/interaction/drag_session.dart';
-import '../../core/sfx/sfx.dart';
 import '../../core/state/lesson_state.dart';
 import '../../core/state/task_state.dart';
 import '../../core/state/toast_bus.dart';
@@ -167,7 +166,6 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
     // global quick-capture overlay) skip the veil entirely — no re-warm flash.
     if (_warmedOnce) {
       _warmupPhase = _WarmupPhase.done;
-      Sfx.armed = true; // shaders already warm — nothing silent to wait for
     } else {
       StaircaseState.isWarmingUp = true;
       // Watchdog: if the engine (or frame pump) ever stalls, reveal anyway —
@@ -210,9 +208,6 @@ class _PulseLayerState extends ConsumerState<PulseLayer> with TickerProviderStat
   void _finishWarmup() {
     StaircaseState.isWarmingUp = false;
     _warmedOnce = true;
-    // The veil is down and every widget on screen is one the user actually
-    // asked for — the app may now make noise (see Sfx.armed).
-    Sfx.armed = true;
     if (mounted) setState(() => _warmupPhase = _WarmupPhase.done);
   }
 

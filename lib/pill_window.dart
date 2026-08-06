@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'core/engine/capture_destination.dart';
 import 'core/engine/slate_core_bridge.dart';
-import 'core/sfx/sfx.dart';
 import 'core/theme/app_theme.dart';
 import 'ui/widgets/smart_day_input.dart';
 
@@ -30,12 +29,6 @@ Future<void> runPillWindow() async {
   // is see-through — the Spotlight look, no black box.
   await Window.setEffect(
       effect: WindowEffect.transparent, color: Colors.transparent);
-  // This is a SECOND isolate, so it has its own copy of Sfx's statics — arming
-  // the main one does nothing here. Safe to arm immediately: unlike the main
-  // window there is no warmup stage mounting phantom widgets, and the pill
-  // cannot make a sound before the user summons it.
-  await Sfx.init();
-  Sfx.armed = true;
   runApp(const _PillApp());
 }
 
@@ -133,12 +126,6 @@ class _PillSceneState extends State<_PillScene> with TickerProviderStateMixin {
   /// entrance, the second is proof the first reached the compositor.
   Future<void> _reveal() async {
     _leaving = false;
-    // The summon sound. This runs BEFORE the reply that uncloaks the window, so
-    // the rise leads the pixels by about two frames — which is what you want:
-    // hearing is slower than seeing, and a sound that leads by a hair reads as
-    // simultaneous, while one that trails reads as lag. Nudge it with the HUD's
-    // delay slider if the ear disagrees.
-    Sfx.pillAppear();
     // setState, not a bare ++: the pill widget reads _showRapidHint from THIS
     // build, so the counter has to reach it before the user starts typing.
     if (mounted) setState(() => _summons++);
