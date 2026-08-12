@@ -138,6 +138,12 @@ impl LocalDb {
                 value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS reminder_log (
+                task_id TEXT PRIMARY KEY,
+                slot_ms INTEGER NOT NULL,
+                fired_at INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at);
             CREATE INDEX IF NOT EXISTS idx_tasks_deleted ON tasks(is_deleted);
             CREATE INDEX IF NOT EXISTS idx_sync_queue_created ON sync_queue(created_at);"
@@ -181,6 +187,11 @@ impl LocalDb {
                 [],
             );
             let _ = conn.execute_batch("PRAGMA user_version = 3;");
+        }
+        // Reminders: the delivery log. Created by the schema batch above (so old
+        // and new DBs alike get it) — this only moves the version marker.
+        if user_version < 4 {
+            let _ = conn.execute_batch("PRAGMA user_version = 4;");
         }
 
         Ok(Self { conn: Mutex::new(conn) })
@@ -396,6 +407,66 @@ impl LocalDb {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
             crate::dlog!("[db] wal_checkpoint failed: {}", e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // REMINDER LOG — what we have already said out loud
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// The log records WHICH moment was delivered, not a "done" flag. Move a
+    /// task from 18:00 to 20:00 and its slot changes with it, so the new moment
+    /// is unspoken again — no edit hook has to remember to reset anything. It
+    /// also means a task can only ever be announced once per slot, across
+    /// restarts.
+    pub fn reminded_slots(&self) -> std::collections::HashMap<String, i64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = match conn.prepare("SELECT task_id, slot_ms FROM reminder_log") {
+            Ok(s) => s,
+            Err(e) => {
+                crate::dlog!("[db] reminded_slots prepare failed: {}", e);
+                return std::collections::HashMap::new();
+            }
+        };
+        // Collect eagerly while stmt/conn are still alive (same shape as
+        // load_all_tasks) — the mapped rows borrow both.
+        let rows_result = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        });
+        match rows_result {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                crate::dlog!("[db] reminded_slots query failed: {}", e);
+                std::collections::HashMap::new()
+            }
+        }
+    }
+
+    /// One row per task: a later slot overwrites the earlier one, so the log
+    /// stays the same size as the set of tasks that ever spoke.
+    pub fn mark_reminded(&self, task_id: &str, slot_ms: i64, fired_at: i64) {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = conn.execute(
+            "INSERT INTO reminder_log (task_id, slot_ms, fired_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(task_id) DO UPDATE SET
+                slot_ms = excluded.slot_ms,
+                fired_at = excluded.fired_at",
+            params![task_id, slot_ms, fired_at],
+        ) {
+            crate::dlog!("[db] mark_reminded failed for {}: {}", task_id, e);
+        }
+    }
+
+    /// Drop rows whose task is gone, and rows far enough in the past that no
+    /// slot could ever match them again.
+    pub fn prune_reminder_log(&self, before_ms: i64) {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = conn.execute(
+            "DELETE FROM reminder_log
+             WHERE slot_ms < ?1 OR task_id NOT IN (SELECT id FROM tasks)",
+            params![before_ms],
+        ) {
+            crate::dlog!("[db] prune_reminder_log failed: {}", e);
         }
     }
 

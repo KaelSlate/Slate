@@ -304,18 +304,18 @@ class _HoverTaskCardState extends State<HoverTaskCard>
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: done
-                      ? const Color(0xFF30D158).withOpacity(0.12)
+                      ? AppTheme.taskDone.withOpacity(0.12)
                       : Colors.transparent,
                   border: Border.all(
                     color: done
-                        ? const Color(0xFF30D158).withOpacity(0.60)
+                        ? AppTheme.taskDone.withOpacity(0.60)
                         : Colors.white.withOpacity(_hovered ? 0.28 : 0.12),
                     width: done ? 1.5 : 1.0,
                   ),
                   boxShadow: done
                       ? [
                           BoxShadow(
-                            color: const Color(0xFF30D158).withOpacity(0.25),
+                            color: AppTheme.taskDone.withOpacity(0.25),
                             blurRadius: 8,
                           ),
                         ]
@@ -329,7 +329,7 @@ class _HoverTaskCardState extends State<HoverTaskCard>
                 child: done
                     ? Icon(Icons.check,
                         size: widget.compact ? 9 : 10,
-                        color: const Color(0xFF30D158).withOpacity(0.95))
+                        color: AppTheme.taskDone.withOpacity(0.95))
                     : null,
               ),
             ),

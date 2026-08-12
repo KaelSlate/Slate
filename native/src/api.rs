@@ -1632,6 +1632,10 @@ pub extern "C" fn ffi_create_task_ex(
 
     async_upsert(&task);
     async_enqueue_sync(SyncOp::Create, &task.id, &task);
+    // Only touches the DB when the stated time is already behind us, which is
+    // rare — the common capture ("meeting at 18") is in the future and this is
+    // a no-op, so the write queue stays the hot path it was built to be.
+    seal_past_slot(&task, now);
 
     Box::into_raw(Box::new(CTask::from_rust_task(&task)))
 }
@@ -1708,8 +1712,428 @@ pub extern "C" fn ffi_update_task_ex(
         Some(task) => {
             async_upsert(&task);
             async_enqueue_sync(SyncOp::Update, &task.id, &task);
+            // Dropped onto an hour that already passed: seal it, or the card
+            // would fire the instant the drag ends.
+            seal_past_slot(&task, chrono::Utc::now().timestamp_millis());
             Box::into_raw(Box::new(CTask::from_rust_task(&task)))
         }
         None => std::ptr::null_mut(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REMINDERS
+//
+// One rule: a time IS the request to be reminded. A task carrying start_time
+// gets a slot; a task without one stays silent forever. Priority (!/!!) is
+// deliberately never consulted — importance and wanting to be interrupted are
+// different axes, and taxing the capture with an extra keystroke is exactly the
+// friction this product exists to remove.
+//
+// The slot is DERIVED (day + start_time - lead), never stored. What is stored is
+// which slot already spoke (reminder_log), so moving a task to a new time makes
+// it unspoken again for free.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Five minutes early. A reminder that lands after the point where the person
+/// could still act on it stops being help and becomes a reproach; zero lead is
+/// a notice of lateness, and the ten-to-fifteen calendars use is "time to walk
+/// to the meeting room" — which is not what this is.
+pub const REMINDER_LEAD_MS: i64 = 5 * 60_000;
+
+/// How late is still worth saying out loud. Past this the moment is gone and we
+/// stay quiet on purpose — the day itself carries the task from there.
+pub const REMINDER_GRACE_MS: i64 = 120_000;
+
+/// A task born — or moved — after its own moment must not shout two seconds
+/// later. Typing "call at 15:00" at 14:58 seals the 14:55 slot as already
+/// spoken, which also covers dragging a task onto an hour that has passed.
+fn seal_past_slot(task: &RustTask, now_ms: i64) {
+    if let Some(slot) = reminder_slot_ms(task, REMINDER_LEAD_MS) {
+        if slot <= now_ms {
+            if let Some(db) = get_db() {
+                db.mark_reminded(&task.id, slot, now_ms);
+            }
+        }
+    }
+}
+
+/// The absolute moment this task asks to be announced, or None if it never does.
+///
+/// `start_time` is WALL-CLOCK ("18:00"), so the moment is resolved through the
+/// local calendar, never as `midnight + minutes`. On the two days a year the
+/// clocks move, a day is 23 or 25 hours long and that arithmetic silently lands
+/// an hour off. This is also why the calculation lives here and is never
+/// duplicated in Dart.
+pub fn reminder_slot_ms(task: &RustTask, lead_ms: i64) -> Option<i64> {
+    if task.is_completed || task.is_inbox {
+        return None;
+    }
+    let minutes = task.start_time?;
+    if !(0..=1439).contains(&minutes) {
+        return None;
+    }
+    use chrono::{Local, TimeZone};
+    let secs = task.created_at / 1000;
+    let nsecs = ((task.created_at % 1000) * 1_000_000) as u32;
+    let wall = Local
+        .timestamp_opt(secs, nsecs)
+        .earliest()
+        .and_then(|dt| {
+            dt.date_naive()
+                .and_hms_opt((minutes / 60) as u32, (minutes % 60) as u32, 0)
+        })
+        // Spring-forward skips an hour: a task sitting inside the gap has no
+        // real moment. Falling back to plain arithmetic keeps it audible —
+        // an hour of drift once a year beats silence.
+        .and_then(|naive| naive.and_local_timezone(Local).earliest())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(|| TaskStore::day_start_ms(task.created_at) + minutes * 60_000);
+    Some(wall - lead_ms)
+}
+
+/// Slots that have come due and have not been spoken yet.
+///
+/// `grace_ms` is how late is still worth saying out loud. Past it we stay quiet
+/// on purpose: a reminder arriving after the point where the person could still
+/// act on it stops being help and becomes a reproach — the day view picks those
+/// up instead. Pure function, no globals: this is the part worth testing.
+pub fn due_reminders(
+    tasks: &[RustTask],
+    reminded: &HashMap<String, i64>,
+    now_ms: i64,
+    lead_ms: i64,
+    grace_ms: i64,
+) -> Vec<(RustTask, i64)> {
+    let mut out: Vec<(RustTask, i64)> = tasks
+        .iter()
+        .filter_map(|t| reminder_slot_ms(t, lead_ms).map(|slot| (t, slot)))
+        .filter(|(_, slot)| *slot <= now_ms && *slot > now_ms - grace_ms)
+        .filter(|(t, slot)| reminded.get(&t.id) != Some(slot))
+        .map(|(t, slot)| (t.clone(), slot))
+        .collect();
+    out.sort_by_key(|(_, slot)| *slot);
+    out
+}
+
+/// The next slot strictly in the future, or None if the day holds nothing more.
+/// The scheduler sleeps on this instead of polling blindly.
+pub fn next_reminder_ms(tasks: &[RustTask], now_ms: i64, lead_ms: i64) -> Option<i64> {
+    tasks
+        .iter()
+        .filter_map(|t| reminder_slot_ms(t, lead_ms))
+        .filter(|slot| *slot > now_ms)
+        .min()
+}
+
+/// A single announcement, flattened for the ABI. Caller frees the whole list
+/// with `ffi_free_reminder_list` (Caller-Frees protocol).
+#[repr(C)]
+pub struct CReminder {
+    pub id: *mut c_char,
+    pub title: *mut c_char,
+    /// The moment we speak (start minus lead). This IS the announcement's
+    /// identity — Dart hands it back to `ffi_mark_reminded` unchanged.
+    pub slot_ms: i64,
+    /// Local midnight of the task's day, so a click can open exactly that day.
+    pub day_start_ms: i64,
+    /// Minutes since midnight — renders "18:00" without recomputing the day.
+    pub start_time: i64,
+    /// 0 = normal, 1 = `!`, 2 = `!!`. It does NOT decide whether we speak — a
+    /// time alone does that. It decides how long the card waits: a banner that
+    /// leaves on its own, or one that waits to be noticed.
+    pub priority: u8,
+}
+
+#[repr(C)]
+pub struct CReminderList {
+    pub data: *mut CReminder,
+    pub len: usize,
+    pub capacity: usize,
+}
+
+impl CReminderList {
+    fn from_vec(items: Vec<(RustTask, i64)>) -> Self {
+        let mut c_items: Vec<CReminder> = items
+            .into_iter()
+            .map(|(t, slot)| CReminder {
+                id: CString::new(t.id.clone()).unwrap_or_default().into_raw(),
+                title: CString::new(t.title.clone()).unwrap_or_default().into_raw(),
+                slot_ms: slot,
+                day_start_ms: TaskStore::day_start_ms(t.created_at),
+                start_time: t.start_time.unwrap_or(-1),
+                priority: t.priority.min(2),
+            })
+            .collect();
+        let mut c_items = std::mem::ManuallyDrop::new(c_items);
+        Self {
+            data: c_items.as_mut_ptr(),
+            len: c_items.len(),
+            capacity: c_items.capacity(),
+        }
+    }
+}
+
+/// Announcements that have come due. Empty list is the normal answer.
+///
+/// Lead and grace are NOT parameters on purpose: a number that lives in two
+/// languages eventually disagrees with itself. Rust owns them; Dart owns when
+/// to ask.
+#[no_mangle]
+pub extern "C" fn ffi_due_reminders(now_ms: i64) -> CReminderList {
+    let reminded = match get_db() {
+        Some(db) => db.reminded_slots(),
+        None => HashMap::new(),
+    };
+    let tasks = {
+        let store = TASK_STORE.read().unwrap_or_else(|e| e.into_inner());
+        store.all_tasks()
+    };
+    CReminderList::from_vec(due_reminders(
+        &tasks,
+        &reminded,
+        now_ms,
+        REMINDER_LEAD_MS,
+        REMINDER_GRACE_MS,
+    ))
+}
+
+/// Next future slot in ms, or -1 when there is nothing left to wait for.
+#[no_mangle]
+pub extern "C" fn ffi_next_reminder_at(now_ms: i64) -> i64 {
+    let store = TASK_STORE.read().unwrap_or_else(|e| e.into_inner());
+    next_reminder_ms(&store.all_tasks(), now_ms, REMINDER_LEAD_MS).unwrap_or(-1)
+}
+
+/// Record that this exact slot has spoken, so it never speaks twice — including
+/// across restarts. Prunes stale rows on the way out; it runs at most once per
+/// announcement, so a single DELETE here costs nothing.
+#[no_mangle]
+pub extern "C" fn ffi_mark_reminded(task_id: *const c_char, slot_ms: i64, now_ms: i64) -> bool {
+    let id = unsafe { safe_cstr_to_string(task_id) };
+    if id.is_empty() {
+        return false;
+    }
+    match get_db() {
+        Some(db) => {
+            db.mark_reminded(&id, slot_ms, now_ms);
+            db.prune_reminder_log(now_ms - 7 * 86_400_000);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Seal a task's slot without waiting for it: this task will not speak.
+///
+/// Used for the first-run samples, which carry today's times — a brand-new user
+/// must not be reminded about a coffee with someone who does not exist. The slot
+/// is computed HERE so the daylight-saving arithmetic stays in one place.
+#[no_mangle]
+pub extern "C" fn ffi_seal_reminder(task_id: *const c_char, now_ms: i64) -> bool {
+    let id = unsafe { safe_cstr_to_string(task_id) };
+    if id.is_empty() {
+        return false;
+    }
+    let task = {
+        let store = TASK_STORE.read().unwrap_or_else(|e| e.into_inner());
+        store.tasks.get(&id).cloned()
+    };
+    let Some(task) = task else { return false };
+    // No time means it never speaks anyway — nothing to seal.
+    let Some(slot) = reminder_slot_ms(&task, REMINDER_LEAD_MS) else {
+        return false;
+    };
+    match get_db() {
+        Some(db) => {
+            db.mark_reminded(&id, slot, now_ms);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Caller-Frees: reclaim every string and the backing array.
+#[no_mangle]
+pub extern "C" fn ffi_free_reminder_list(list: CReminderList) {
+    if list.data.is_null() {
+        return;
+    }
+    unsafe {
+        let vec = Vec::from_raw_parts(list.data, list.len, list.capacity);
+        for r in vec {
+            if !r.id.is_null() {
+                drop(CString::from_raw(r.id));
+            }
+            if !r.title.is_null() {
+                drop(CString::from_raw(r.title));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::*;
+
+    const LEAD: i64 = 5 * 60_000;   // the shipped five minutes
+    const GRACE: i64 = 90_000;      // still worth saying out loud
+
+    fn at(minutes: i64) -> RustTask {
+        RustTask {
+            id: format!("t{}", minutes),
+            title: "task".into(),
+            start_time: Some(minutes),
+            ..Default::default()
+        }
+    }
+
+    fn slot_of(t: &RustTask) -> i64 {
+        reminder_slot_ms(t, LEAD).expect("task was built with a time")
+    }
+
+    /// Local wall-clock (hour, minute) of an epoch-ms instant.
+    fn wall_of(ms: i64) -> (u32, u32) {
+        use chrono::{Local, TimeZone, Timelike};
+        let dt = Local.timestamp_opt(ms / 1000, 0).earliest().expect("valid instant");
+        (dt.hour(), dt.minute())
+    }
+
+    #[test]
+    fn a_time_asks_to_be_reminded_five_minutes_early() {
+        // Asserted in wall-clock, not in arithmetic: 18:00 minus the lead must
+        // READ as 17:55 on the clock the person is looking at.
+        let t = at(18 * 60);
+        assert_eq!(wall_of(slot_of(&t) + LEAD), (18, 0));
+        assert_eq!(wall_of(slot_of(&t)), (17, 55));
+    }
+
+    #[test]
+    fn every_day_of_the_year_lands_on_the_stated_wall_clock() {
+        // The DST guard. Walk a whole year in local days — including whichever
+        // two shift the clocks in this machine's zone — and require the moment
+        // to keep reading as 18:00. `midnight + minutes` fails this on the
+        // 23- and 25-hour days.
+        let base = chrono::Utc::now().timestamp_millis();
+        for day in 0..365 {
+            let t = RustTask {
+                id: format!("d{}", day),
+                start_time: Some(18 * 60),
+                created_at: base + day * 86_400_000,
+                ..Default::default()
+            };
+            let fire = slot_of(&t) + LEAD;
+            assert_eq!(wall_of(fire), (18, 0), "day offset {} drifted", day);
+        }
+    }
+
+    #[test]
+    fn no_time_means_silence_forever() {
+        let t = RustTask { start_time: None, ..Default::default() };
+        assert_eq!(reminder_slot_ms(&t, LEAD), None);
+    }
+
+    #[test]
+    fn priority_does_not_touch_reminders() {
+        // The whole product decision in one assertion: !! and plain agree.
+        let plain = at(9 * 60);
+        let shouted = RustTask { priority: 2, ..at(9 * 60) };
+        assert_eq!(
+            reminder_slot_ms(&plain, LEAD),
+            reminder_slot_ms(&shouted, LEAD)
+        );
+    }
+
+    #[test]
+    fn a_shouted_task_without_a_time_still_stays_silent() {
+        let t = RustTask { priority: 2, start_time: None, ..Default::default() };
+        assert_eq!(reminder_slot_ms(&t, LEAD), None);
+    }
+
+    #[test]
+    fn done_and_inbox_never_speak() {
+        let done = RustTask { is_completed: true, ..at(10 * 60) };
+        let inbox = RustTask { is_inbox: true, ..at(10 * 60) };
+        assert_eq!(reminder_slot_ms(&done, LEAD), None);
+        assert_eq!(reminder_slot_ms(&inbox, LEAD), None);
+    }
+
+    #[test]
+    fn out_of_range_minutes_are_refused() {
+        let bad = RustTask { start_time: Some(1440), ..Default::default() };
+        assert_eq!(reminder_slot_ms(&bad, LEAD), None);
+    }
+
+    #[test]
+    fn due_within_grace_speaks_but_older_stays_quiet() {
+        let t = at(12 * 60);
+        let slot = slot_of(&t);
+        let empty = HashMap::new();
+        let tasks = vec![t];
+
+        // Exactly on time, and a moment late — both still actionable.
+        assert_eq!(due_reminders(&tasks, &empty, slot, LEAD, GRACE).len(), 1);
+        assert_eq!(due_reminders(&tasks, &empty, slot + 60_000, LEAD, GRACE).len(), 1);
+        // Past the grace window: the moment is gone, so we say nothing.
+        assert!(due_reminders(&tasks, &empty, slot + GRACE, LEAD, GRACE).is_empty());
+        // Not yet.
+        assert!(due_reminders(&tasks, &empty, slot - 1, LEAD, GRACE).is_empty());
+    }
+
+    #[test]
+    fn a_spoken_slot_never_speaks_twice() {
+        let t = at(15 * 60);
+        let slot = slot_of(&t);
+        let tasks = vec![t.clone()];
+        let mut log = HashMap::new();
+        log.insert(t.id.clone(), slot);
+        assert!(due_reminders(&tasks, &log, slot, LEAD, GRACE).is_empty());
+    }
+
+    #[test]
+    fn moving_a_task_makes_it_unspoken_again() {
+        // The reason the log stores WHICH slot instead of a done flag: no edit
+        // hook has to remember to reset anything.
+        let moved = at(20 * 60);
+        let mut log = HashMap::new();
+        log.insert(moved.id.clone(), slot_of(&moved) - 2 * 3_600_000); // old 18:00
+        let slot = slot_of(&moved);
+        assert_eq!(due_reminders(&[moved], &log, slot, LEAD, GRACE).len(), 1);
+    }
+
+    #[test]
+    fn due_list_is_ordered_by_moment() {
+        let early = at(8 * 60);
+        let late = at(17 * 60);
+        let now = slot_of(&late);
+        let out = due_reminders(&[late, early], &HashMap::new(), now, LEAD, GRACE * 1000);
+        let slots: Vec<i64> = out.iter().map(|(_, s)| *s).collect();
+        let mut sorted = slots.clone();
+        sorted.sort();
+        assert_eq!(slots, sorted);
+    }
+
+    #[test]
+    fn next_moment_is_the_nearest_future_one() {
+        let soon = at(11 * 60);
+        let later = at(16 * 60);
+        let base = slot_of(&soon) - 1;
+        assert_eq!(
+            next_reminder_ms(&[later.clone(), soon.clone()], base, LEAD),
+            Some(slot_of(&soon))
+        );
+        // Past the first one, the next is the later task.
+        assert_eq!(
+            next_reminder_ms(&[later.clone(), soon.clone()], slot_of(&soon), LEAD),
+            Some(slot_of(&later))
+        );
+        // Nothing left today.
+        assert_eq!(next_reminder_ms(&[soon, later.clone()], slot_of(&later), LEAD), None);
+    }
+
+    #[test]
+    fn nothing_scheduled_means_nothing_to_wait_for() {
+        let idle = RustTask { start_time: None, ..Default::default() };
+        assert_eq!(next_reminder_ms(&[idle], 0, LEAD), None);
     }
 }

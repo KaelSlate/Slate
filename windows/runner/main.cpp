@@ -1,11 +1,13 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/standard_method_codec.h>
 #include <windows.h>
 
 #include <functional>
 #include <memory>
 
 #include "flutter_window.h"
+#include "notify_window.h"
 #include "pill_window.h"
 #include "utils.h"
 
@@ -82,6 +84,40 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   flutter::DartProject pill_project(L"data");
   pill_project.set_dart_entrypoint_arguments({"--pill"});
 
+  // Third engine: the reminder card (`--notify`). Built one turn of the message
+  // loop AFTER the pill rather than beside it — booting two engines back to
+  // back competes for the same CPU the pill's own boot already claimed. It is
+  // NOT built lazily on the first reminder: that would put a cold engine and a
+  // cold swapchain in front of the very first card a person ever sees, which is
+  // the one moment nobody can rehearse.
+  std::unique_ptr<NotifyWindow> notify_window;
+  flutter::DartProject notify_project(L"data");
+  notify_project.set_dart_entrypoint_arguments({"--notify"});
+  const UINT build_notify_msg = ::RegisterWindowMessageW(L"Slate.BuildNotify");
+
+  auto build_notify = [&]() {
+    if (notify_window) return;
+    RECT wa = {0, 0, 1366, 768};
+    ::SystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0);
+    notify_window = std::make_unique<NotifyWindow>(notify_project);
+    Win32Window::Point origin(wa.left, wa.top);
+    Win32Window::Size size(wa.right - wa.left, wa.bottom - wa.top);
+    // WS_EX_NOACTIVATE is the load-bearing style: this window can never take
+    // the keyboard, so a card cannot swallow a keystroke mid-sentence. It also
+    // means Escape will never reach it — by design, not by omission.
+    notify_window->Create(L"SlateNotify", origin, size, WS_POPUP,
+                          WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                          /*physical_pixels=*/true);
+    notify_window->SetActionSink([&window](const flutter::EncodableValue& v) {
+      window.SendNotifyAction(v);
+    });
+    notify_window->SetClosedSink([&window]() {
+      window.SendNotifyAction(flutter::EncodableValue(flutter::EncodableMap{
+          {flutter::EncodableValue("action"),
+           flutter::EncodableValue("closed")}}));
+    });
+  };
+
   auto build_pill = [&]() {
     if (pill_window) return;
     RECT wa = {0, 0, 1366, 768};
@@ -97,6 +133,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     // Pill submit -> main isolate creates the task (one engine, one DB).
     pill_window->SetCaptureSink(
         [&window](const flutter::EncodableValue& v) { window.SendCapture(v); });
+    // Hand the notify engine the next turn of the loop, not this one.
+    ::PostMessageW(nullptr, build_notify_msg, 0, 0);
   };
 
   if (start_hidden) {
@@ -111,12 +149,29 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   // Wired up front: a hotkey that somehow beats the first frame is a no-op
   // rather than a crash.
-  window.SetShowPillCallback([&pill_window]() {
+  window.SetShowPillCallback([&pill_window, &notify_window]() {
+    // The person always beats the machine: a card on screen yields to the
+    // capture chord instead of fighting it for the same corner.
+    if (notify_window) notify_window->HideNow();
     if (pill_window) pill_window->ShowPill();
+  });
+
+  window.SetNotifySink(
+      [&notify_window](const flutter::EncodableValue& v) -> bool {
+        return notify_window ? notify_window->ShowCards(v) : false;
+      });
+  window.SetNotifyHideCallback([&notify_window]() {
+    if (notify_window) notify_window->HideNow();
   });
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {
+    // Thread-targeted message (hwnd is null): our own "build the third engine
+    // now" ping. DispatchMessage would drop it on the floor.
+    if (msg.hwnd == nullptr && msg.message == build_notify_msg) {
+      build_notify();
+      continue;
+    }
     ::TranslateMessage(&msg);
     ::DispatchMessage(&msg);
   }

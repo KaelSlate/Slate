@@ -8,6 +8,7 @@
 // no file I/O, no path resolution, no way to ship a build with it missing.
 // The string id this maps to lives in sfx_player.cpp / lib/core/sfx/sfx.dart.
 #define IDR_SFX_DONE                    203
+#define IDR_SFX_DUE                     204
 
 // Next default values for new objects
 //

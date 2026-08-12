@@ -18,6 +18,7 @@ import 'core/state/lesson_state.dart';
 import 'core/state/local_prefs.dart';
 import 'core/state/task_state.dart';
 import 'core/theme/app_theme.dart';
+import 'notify_window.dart';
 import 'pill_window.dart';
 import 'ui/screens/main_screen.dart';
 
@@ -50,6 +51,13 @@ void main(List<String> args) {
   // app's window/tray/hotkey machinery. See pill_window.dart.
   if (args.contains('--pill')) {
     runPillWindow();
+    return;
+  }
+  // A THIRD engine hosts the reminder card (`--notify`). Like the pill it is a
+  // renderer and nothing else: no tray, no hotkey, no engine init, no prefs —
+  // the main isolate owns the DB, the strings and the decisions.
+  if (args.contains('--notify')) {
+    runNotifyWindow();
     return;
   }
   // Crash observability for testers: every uncaught error (zone + framework)
@@ -131,6 +139,10 @@ Future<void> _boot(List<String> args) async {
   await QuickCaptureController.instance.init();
   TrayShell.instance.taskState = container.read(taskStateProvider);
   await TrayShell.instance.init();
+  // The return loop: a task that carries a time speaks five minutes before it.
+  // Safe to start here — the tray is up, the engine is hydrated, and the
+  // scheduler's first act is to ask how long it may sleep.
+  TrayShell.instance.startReminders();
 
   // Launch view (#1): default to WEEK, but reopen in MONTH if that's the view you
   // last worked in — the 'V' toggle persists view_pref. We no longer force the
@@ -167,6 +179,21 @@ class _WindowCloseHandler with WindowListener {
   void onWindowClose() async {
     await windowManager.hide();
   }
+
+  // Whether Slate itself is the window you are looking at. A reminder card is
+  // pointless when the task is already on screen — and this is the cheapest
+  // honest signal for it, kept warm so the scheduler never has to await.
+  @override
+  void onWindowFocus() => TrayShell.instance.windowFocused = true;
+
+  @override
+  void onWindowBlur() => TrayShell.instance.windowFocused = false;
+
+  @override
+  void onWindowMinimize() => TrayShell.instance.windowFocused = false;
+
+  @override
+  void onWindowRestore() => TrayShell.instance.windowFocused = true;
 }
 
 /// Custom scroll behavior for desktop.

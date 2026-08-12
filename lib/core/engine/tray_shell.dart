@@ -8,10 +8,12 @@ import 'package:window_manager/window_manager.dart';
 import '../state/app_dirs.dart';
 import '../state/crash_log.dart';
 import '../state/export_service.dart';
+import '../sfx/sfx.dart';
 import '../state/local_prefs.dart';
 import '../state/task_state.dart';
 import 'capture_destination.dart';
 import 'quick_capture_controller.dart';
+import 'reminder_scheduler.dart';
 import 'slate_core_bridge.dart';
 
 /// Tray residency + launch-at-login. The capture hotkey is the product's
@@ -39,6 +41,8 @@ class TrayShell with TrayListener {
           await openApp();
         case 'pillCapture':
           _handlePillCapture(call.arguments);
+        case 'notifyAction':
+          _handleNotifyAction(call.arguments);
       }
       return null;
     });
@@ -89,6 +93,16 @@ class TrayShell with TrayListener {
       MenuItem.separator(),
       if (hasDemo) MenuItem(key: 'clear_demo', label: 'Clear sample tasks'),
       MenuItem.checkbox(
+        key: 'reminders',
+        label: 'Reminders',
+        checked: LocalPrefs.instance.reminders,
+      ),
+      MenuItem.checkbox(
+        key: 'reminder_sound',
+        label: 'Reminder sound',
+        checked: LocalPrefs.instance.reminderSound,
+      ),
+      MenuItem.checkbox(
         key: 'autostart',
         label: 'Launch at startup',
         checked: LocalPrefs.instance.autostart,
@@ -117,6 +131,87 @@ class TrayShell with TrayListener {
     );
     final dest = resolveCapture(result, DateTime.now());
     taskState?.createCaptured(result.cleanTitle, result, dest);
+  }
+
+  // ── Reminders ─────────────────────────────────────────────────────────────
+
+  ReminderScheduler? _reminders;
+
+  /// Is Slate's own window up and focused? Fed by the window listener in
+  /// main(). When it is, a reminder card would be telling the person something
+  /// already on the screen in front of them.
+  bool windowFocused = false;
+
+  /// Starts the loop that decides when Slate speaks. Called once from _boot,
+  /// after the tray exists — the process is already resident, so this is the
+  /// only thing the feature needs to stay alive all day.
+  void startReminders() {
+    if (_reminders != null) return;
+    _reminders = ReminderScheduler.live(
+      core: SlateCore(),
+      present: _presentCards,
+      chime: (priority) {
+        // Two switches, not one: someone on a call wants silence, not the whole
+        // feature gone.
+        if (LocalPrefs.instance.reminderSound) {
+          Sfx.reminderDue(priority: priority);
+        }
+      },
+      enabled: () => LocalPrefs.instance.reminders,
+      // Kept in sync by the window listener rather than asked on every tick:
+      // window_manager's isFocused() is async, and a scheduler decision cannot
+      // wait on a round trip.
+      appInFocus: () => windowFocused,
+    );
+    _reminders!.start();
+  }
+
+  /// A capture or an edit may have moved the next moment closer than the sleep
+  /// the scheduler is currently sitting on.
+  void remindersChanged() => _reminders?.reschedule();
+
+  /// Hands the cards to the runner, which owns the notify window. The BOOL that
+  /// comes back is load-bearing: false means Windows refused the moment (Focus
+  /// Assist, a game, a locked screen) and the reminder must stay unspoken.
+  Future<bool> _presentCards(
+      List<ReminderCard> cards, bool merging, int lifeMs) async {
+    try {
+      final ok = await _shell.invokeMethod<bool>('notify', <String, dynamic>{
+        'cards': cards.map((c) => c.toMap()).toList(),
+        'lifeMs': lifeMs,
+      });
+      return ok ?? false;
+    } catch (e) {
+      debugPrint('reminders: present failed: $e');
+      return false;
+    }
+  }
+
+  /// A tap on the card, or the card leaving. The window is a renderer — every
+  /// consequence happens here, in the isolate that owns the DB and the undo.
+  void _handleNotifyAction(dynamic args) {
+    if (args is! Map) return;
+    final action = args['action'] as String?;
+    if (action == 'closed') {
+      _reminders?.cardClosed();
+      return;
+    }
+    if (action == 'done') {
+      final id = args['id'] as String?;
+      final state = taskState;
+      if (id == null || state == null) return;
+      for (final t in state.tasks) {
+        if (t.id == id) {
+          // The same funnel as every checkbox in the app: same chime, same undo.
+          if (!t.isCompleted) state.toggleTask(t);
+          break;
+        }
+      }
+      return;
+    }
+    if (action == 'open') {
+      openApp();
+    }
   }
 
   Future<void> openApp() async {
@@ -177,6 +272,16 @@ class TrayShell with TrayListener {
         }
       case 'clear_demo':
         taskState?.clearDemoTasks();
+        await _rebuildMenu();
+      case 'reminders':
+        LocalPrefs.instance.reminders = !LocalPrefs.instance.reminders;
+        // Off means off NOW, not after the current card times out.
+        if (!LocalPrefs.instance.reminders) {
+          await _shell.invokeMethod('notifyHide');
+        }
+        await _rebuildMenu();
+      case 'reminder_sound':
+        LocalPrefs.instance.reminderSound = !LocalPrefs.instance.reminderSound;
         await _rebuildMenu();
       case 'autostart':
         final next = !LocalPrefs.instance.autostart;

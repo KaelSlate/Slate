@@ -85,7 +85,7 @@ class _RingPainter extends CustomPainter {
   final bool complete;
   _RingPainter({required this.fraction, required this.complete});
 
-  static const _done = Color(0xFF30D158); // same green as the checkbox
+  static const _done = AppTheme.taskDone;
 
   @override
   void paint(Canvas canvas, Size size) {

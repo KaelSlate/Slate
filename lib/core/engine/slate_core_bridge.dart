@@ -56,6 +56,64 @@ final class CTaskList extends Struct {
   @Size() external int capacity;
 }
 
+/// One announcement that has come due. Field order MUST match `CReminder` in
+/// native/src/api.rs — this is a memory layout, not a message.
+final class CReminder extends Struct {
+  external Pointer<Utf8> id;
+  external Pointer<Utf8> title;
+  @Int64() external int slotMs;
+  @Int64() external int dayStartMs;
+  @Int64() external int startTime;
+  @Uint8() external int priority;
+}
+
+final class CReminderList extends Struct {
+  external Pointer<CReminder> data;
+  @Size() external int len;
+  @Size() external int capacity;
+}
+
+/// A task asking to be announced. `slotMs` is the announcement's identity —
+/// hand it back to [SlateCore.markReminded] unchanged, or the same moment can
+/// speak twice.
+class DueReminder {
+  const DueReminder({
+    required this.id,
+    required this.title,
+    required this.slotMs,
+    required this.dayStartMs,
+    required this.startTime,
+    required this.priority,
+  });
+
+  final String id;
+  final String title;
+  final int slotMs;
+  /// Local midnight of the task's day — opening the card lands exactly here.
+  final int dayStartMs;
+  /// Minutes since midnight, already resolved by Rust (DST included).
+  final int startTime;
+  /// 0 normal, 1 `!`, 2 `!!`. Never decides WHETHER we speak — only how long
+  /// the card waits before it lets itself out.
+  final int priority;
+}
+
+// Reminders. Lead and grace live in Rust; Dart only decides WHEN to ask.
+typedef FfiDueRemindersNative = CReminderList Function(Int64);
+typedef FfiDueRemindersDart = CReminderList Function(int);
+
+typedef FfiNextReminderAtNative = Int64 Function(Int64);
+typedef FfiNextReminderAtDart = int Function(int);
+
+typedef FfiMarkRemindedNative = Bool Function(Pointer<Utf8>, Int64, Int64);
+typedef FfiMarkRemindedDart = bool Function(Pointer<Utf8>, int, int);
+
+typedef FfiSealReminderNative = Bool Function(Pointer<Utf8>, Int64);
+typedef FfiSealReminderDart = bool Function(Pointer<Utf8>, int);
+
+typedef FfiFreeReminderListNative = Void Function(CReminderList);
+typedef FfiFreeReminderListDart = void Function(CReminderList);
+
 // Phase 3: Engine init / graceful shutdown
 typedef FfiInitEngineNative = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
 typedef FfiInitEngineDart = int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
@@ -320,6 +378,13 @@ class SlateCore {
   FfiTasksForDateDart? _ffiTasksForDate;
   FfiFreeTaskDart? _ffiFreeTask;
   FfiFreeTaskListDart? _ffiFreeTaskList;
+
+  // Reminders
+  FfiDueRemindersDart? _ffiDueReminders;
+  FfiNextReminderAtDart? _ffiNextReminderAt;
+  FfiMarkRemindedDart? _ffiMarkReminded;
+  FfiSealReminderDart? _ffiSealReminder;
+  FfiFreeReminderListDart? _ffiFreeReminderList;
   
   // Phase 3 Spatial exports
   FfiCalculateFlowFrameDart? _ffiCalculateFlowFrame;
@@ -377,6 +442,12 @@ class SlateCore {
       _ffiTasksForDate = _lib!.lookupFunction<FfiTasksForDateNative, FfiTasksForDateDart>('ffi_tasks_for_date');
       _ffiFreeTask = _lib!.lookupFunction<FfiFreeTaskNative, FfiFreeTaskDart>('ffi_free_task');
       _ffiFreeTaskList = _lib!.lookupFunction<FfiFreeTaskListNative, FfiFreeTaskListDart>('ffi_free_task_list');
+
+      _ffiDueReminders = _lib!.lookupFunction<FfiDueRemindersNative, FfiDueRemindersDart>('ffi_due_reminders');
+      _ffiNextReminderAt = _lib!.lookupFunction<FfiNextReminderAtNative, FfiNextReminderAtDart>('ffi_next_reminder_at');
+      _ffiMarkReminded = _lib!.lookupFunction<FfiMarkRemindedNative, FfiMarkRemindedDart>('ffi_mark_reminded');
+      _ffiSealReminder = _lib!.lookupFunction<FfiSealReminderNative, FfiSealReminderDart>('ffi_seal_reminder');
+      _ffiFreeReminderList = _lib!.lookupFunction<FfiFreeReminderListNative, FfiFreeReminderListDart>('ffi_free_reminder_list');
       
       _ffiCalculateFlowFrame = _lib!.lookupFunction<FfiCalculateFlowFrameNative, FfiCalculateFlowFrameDart>('ffi_calculate_flow_frame');
       _ffiGenerateHourSlots = _lib!.lookupFunction<FfiGenerateHourSlotsNative, FfiGenerateHourSlotsDart>('ffi_generate_hour_slots');
@@ -623,6 +694,69 @@ class SlateCore {
     return List.of(_fallbackTasks);
   }
 
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // REMINDERS
+  //
+  // A time IS the request to be reminded — Rust decides which tasks qualify and
+  // when, including the daylight-saving arithmetic. Dart only asks and shows.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  /// Announcements that have come due right now. Empty is the normal answer.
+  List<DueReminder> dueReminders(int nowMs) {
+    if (!_ffiConnected ||
+        _ffiDueReminders == null ||
+        _ffiFreeReminderList == null) {
+      return const [];
+    }
+    final list = _ffiDueReminders!(nowMs);
+    try {
+      final out = <DueReminder>[];
+      for (var i = 0; i < list.len; i++) {
+        final r = list.data[i];
+        out.add(DueReminder(
+          id: r.id == nullptr ? '' : r.id.toDartString(),
+          title: r.title == nullptr ? '' : r.title.toDartString(),
+          slotMs: r.slotMs,
+          dayStartMs: r.dayStartMs,
+          startTime: r.startTime,
+          priority: r.priority,
+        ));
+      }
+      return out;
+    } finally {
+      // Caller-Frees: Rust allocated every string and the array.
+      _ffiFreeReminderList!(list);
+    }
+  }
+
+  /// Epoch ms of the next moment worth waking for, or null if the day holds
+  /// nothing more. The scheduler sleeps on this instead of polling blindly.
+  int? nextReminderAt(int nowMs) {
+    if (!_ffiConnected || _ffiNextReminderAt == null) return null;
+    final at = _ffiNextReminderAt!(nowMs);
+    return at < 0 ? null : at;
+  }
+
+  /// Record that this exact slot has spoken. Call ONLY after the card is
+  /// actually on screen: marking a moment that never showed loses it forever,
+  /// and the person never learns it existed.
+  bool markReminded(String id, int slotMs, int nowMs) {
+    if (!_ffiConnected || _ffiMarkReminded == null || id.isEmpty) return false;
+    return using((arena) {
+      return _ffiMarkReminded!(_safeCString(id, arena), slotMs, nowMs);
+    });
+  }
+
+  /// This task will never speak — used for the first-run samples, which carry
+  /// today's times. The slot is computed in Rust so the daylight-saving
+  /// arithmetic stays in exactly one place.
+  bool sealReminder(String id, int nowMs) {
+    if (!_ffiConnected || _ffiSealReminder == null || id.isEmpty) return false;
+    return using((arena) {
+      return _ffiSealReminder!(_safeCString(id, arena), nowMs);
+    });
+  }
 
   /// Maximum string length allowed through FFI (defense against buffer overflow).
   static const int _maxFfiStringLen = 10000;

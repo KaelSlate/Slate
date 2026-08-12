@@ -88,6 +88,10 @@ flutter:
     - assets/fonts/InterTight.ttf
     - assets/fonts/RobotoMono.ttf
     - assets/icons/tray_icon.ico
+    # Extracted from the tray icon: the card carries Slate's own face, the way
+    # every macOS banner carries the app's. A notification with no source is
+    # anonymous, and anonymous is the opposite of premium.
+    - assets/icons/app_mark.png
 
   # Bundled variable fonts — shipped in the binary so glyph metrics are correct
   # from the FIRST painted frame (zero runtime fetch, zero text-reflow on entrance,

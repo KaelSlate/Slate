@@ -4,6 +4,7 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
 
 #include <functional>
 #include <memory>
@@ -28,6 +29,21 @@ class FlutterWindow : public Win32Window {
   // A submitted capture from the pill window is delivered to the MAIN isolate
   // (one engine, one DB) as `pillCapture` on slate/shell.
   void SendCapture(const flutter::EncodableValue& value);
+
+  // The scheduler (main isolate) asks to raise the reminder card. The sink
+  // answers whether it actually went up — Windows may be in Focus Assist or a
+  // full-screen game — and that answer decides whether the moment is marked as
+  // spoken. Marking one that never appeared loses it forever.
+  void SetNotifySink(
+      std::function<bool(const flutter::EncodableValue&)> sink) {
+    notify_sink_ = std::move(sink);
+  }
+  void SetNotifyHideCallback(std::function<void()> cb) {
+    notify_hide_cb_ = std::move(cb);
+  }
+  // A tap on the card (done / open) or its disappearance, delivered to the main
+  // isolate as `notifyAction` on slate/shell.
+  void SendNotifyAction(const flutter::EncodableValue& value);
 
   // Runs ONCE on the UI thread after this window has presented its first frame.
   // Anything heavy that isn't needed to draw that frame belongs here — see
@@ -69,8 +85,17 @@ class FlutterWindow : public Win32Window {
   // click (openApp). Used by the e2e harness; tray clicks aren't scriptable.
   UINT show_request_msg_ = 0;
 
+  // External "raise a reminder card NOW" request. Waiting five minutes for a
+  // real moment is not a test, and this drives the SAME path a real reminder
+  // takes — window, region, cloak gate and all. wparam = how many rows.
+  UINT notify_probe_msg_ = 0;
+
   // Raises the separate pill window (wired to PillWindow::ShowPill in main()).
   std::function<void()> show_pill_cb_;
+
+  // Raises / hides the reminder window (wired to NotifyWindow in main()).
+  std::function<bool(const flutter::EncodableValue&)> notify_sink_;
+  std::function<void()> notify_hide_cb_;
 
   // Deferred-until-first-frame work. The engine's frame callback arrives on the
   // RASTER thread, so it only posts |first_frame_msg_|; the callback itself runs

@@ -100,3 +100,10 @@ dart_devtools_*.json
 # Third-party MCP bridge to After Effects. Its own git repo, cloned here for
 # convenience - committing it would leave a broken submodule pointer behind.
 /after-effects-mcp/
+
+# Raw notes from live testing: a verbatim chat log with a named person and a
+# working screenshot. The findings from both are written up in
+# docs/user_findings.md, which is what belongs in source. The raw material is
+# someone else's conversation and it does not go in a repository.
+/timur_chat
+/slate_shot_capture.png

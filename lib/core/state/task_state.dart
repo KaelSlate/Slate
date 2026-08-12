@@ -284,6 +284,12 @@ class TaskState extends ChangeNotifier {
           tags: d.tags,
         );
         if (d.done) core.toggleTask(t);
+        // Samples must never speak. They carry today's times, so without this a
+        // brand-new user gets reminded about a coffee with someone who does not
+        // exist, twenty minutes after installing — which reads as a bug, not a
+        // demo. Sealing the slot is exactly what a real, already-announced task
+        // carries, so nothing special is needed to clear it later.
+        core.sealReminder(t.id, now.millisecondsSinceEpoch);
         ids.add(t.id);
       }
 

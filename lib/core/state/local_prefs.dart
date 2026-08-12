@@ -26,6 +26,9 @@ class LocalPrefs {
   static const _kDemoIds = 'slate_demo_ids';
   static const _kLessons = 'slate_lessons';
   static const _kLessonSeen = 'slate_lesson_seen';
+  static const _kReminders = 'slate_reminders';
+  static const _kReminderSound = 'slate_reminder_sound';
+  static const _kGlanceDay = 'slate_glance_day';
 
   /// Memoized load — main() and the engine (demo seeding) may both await it.
   static Future<LocalPrefs>? _loading;
@@ -110,6 +113,24 @@ class LocalPrefs {
   /// Launch at Windows login (tray-resident, --hidden). Default ON — the
   /// global capture hotkey is the product's core promise.
   bool get autostart => _data[_kAutostart] != 'false';
+
+  /// Reminders for tasks that carry a time. Default ON: the first live user
+  /// named their absence as the reason he would stop opening Slate, so silence
+  /// is not a safe default here.
+  bool get reminders => _data[_kReminders] != 'false';
+  set reminders(bool v) => _set(_kReminders, '$v');
+
+  /// The chime that comes with a card. Separate from [reminders] on purpose —
+  /// "too loud on a call" and "don't remind me at all" are different
+  /// complaints, and someone with the first should not have to choose the
+  /// second.
+  bool get reminderSound => _data[_kReminderSound] != 'false';
+  set reminderSound(bool v) => _set(_kReminderSound, '$v');
+
+  /// yyyy-mm-dd of the last day the glance was shown. Once per calendar day,
+  /// never twice.
+  String? get glanceDay => _data[_kGlanceDay] as String?;
+  set glanceDay(String? v) => _set(_kGlanceDay, v);
 
   set viewPref(String? v) => _set(_kViewPref, v);
   set onboarded(bool v) => _set(_kOnboarded, '$v');
