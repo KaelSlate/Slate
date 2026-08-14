@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
@@ -10,19 +11,30 @@ import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'core/theme/app_theme.dart';
 import 'ui/widgets/reminder_card.dart';
 
-/// Where the card lives. Bottom centre is where the capture pill lives too —
-/// one place: where you speak, and where you are spoken to.
-enum NotifyCorner { bottomRight, bottomCenter }
-
-const NotifyCorner kNotifyCorner = NotifyCorner.bottomCenter;
-
-const double _kEdgeInset = 24;
+// The card lives at bottom CENTRE, where the capture pill lives too — one
+// place: where you speak, and where you are spoken to. There used to be a
+// `NotifyCorner` enum and a `switch` with a `bottomRight` arm here, kept
+// against a layout decision that was made a long time ago and never revisited.
+// A branch that has exactly one reachable case is not configurability, it is
+// a reader's tax.
 
 /// The region padding around the card: enough to hold the shadow, small enough
-/// that it does not swallow a wide band of clicks. Past this the shadow is
-/// already below perception.
-const double _kPadSide = 40;
-const double _kPadTop = 34;
+/// that it does not swallow a wide band of clicks.
+///
+/// These are the numbers that decide whether the shadow ENDS or is CUT. The
+/// window's region is a hard edge — nothing fades across it — so the padding
+/// has to reach out to where the shadow is already below perception. At the
+/// card's widest blur (46 → sigma 27.1) 52 px is 1.92 sigma: Gaussian coverage
+/// outside a straight edge is 0.5·erfc(d/(sigma·sqrt2)) = 0.027, so the
+/// strongest layer's 0.56 alpha arrives as 4/255. Under threshold on any
+/// background.
+///
+/// They were 40/34, which at the old blur of 54 left 14/255 ending in a
+/// straight line — nothing over a dark desktop, a visible ledge over a bright
+/// one. The 12 px this adds per side is dead to clicks; the ledge was dead to
+/// nobody.
+const double _kPadSide = 52;
+const double _kPadTop = 46;
 const double _kPadBottom = 48;
 
 /// Entry for the reminder window — a third Flutter engine (`--notify`).
@@ -32,8 +44,10 @@ const double _kPadBottom = 48;
 /// voice lives in one place.
 ///
 /// slate/notify:
-///   native -> dart : `warmup`, `show` (cards + lifeMs), `reveal` (-> hit rect)
-///   dart -> native : `action` ({action, id, dayMs}), `region` ([l,t,r,b,rad]),
+///   native -> dart : `warmup`, `show` (cards + lifeMs), `reveal` (-> hit rect),
+///                    `revealed` (the window is uncloaked — start the entrance)
+///   dart -> native : `ready` (handler installed — safe to ask for anything),
+///                    `action` ({action, id, dayMs}), `region` ([l,t,r,b,rad]),
 ///                    `closed`
 const _channel = MethodChannel('slate/notify');
 
@@ -56,6 +70,99 @@ class _NotifyApp extends StatelessWidget {
       home: const Scaffold(
         backgroundColor: Colors.transparent,
         body: _NotifyScene(),
+      ),
+    );
+  }
+}
+
+/// Every pipeline the real card is about to need, drawn once while the window
+/// is cloaked, then thrown away.
+///
+/// Drawn ON SCREEN, at the corner, and both halves of that are load-bearing.
+///
+/// Not transparent: `RenderOpacity` skips its child entirely at alpha 0, so an
+/// invisible warm-up warms nothing — precisely why the 0.002-alpha seed frame
+/// above never did this job. And not parked off-screen either, which was the
+/// first attempt: `Stack` clips to its own bounds, and a rasteriser rejects
+/// draws outside the clip before it ever reaches the shader. A warm-up nobody
+/// can see is a warm-up that compiles nothing.
+///
+/// It is safe to draw for real because the window is invisible twice over while
+/// it exists — DWM-cloaked, and shaped to a 1x1 region until Dart answers
+/// `reveal`. [_NotifySceneState._reveal] then waits for a second rasterised
+/// frame before answering, so the uncloak cannot catch this still on the
+/// surface.
+///
+/// It covers what a first card actually hits: the three `MaskFilter.blur`
+/// passes and the rim's gradients (at rest, and again lifted), the
+/// `ImageFilter.blur` inside `MaterialisingContent` at a NON-ZERO t, the
+/// `clipRSuperellipse`, the Inter and RobotoMono glyph atlases, the ring's
+/// `BoxShadow` and `CheckPainter` stroke, and the collapse tint path.
+class _ShaderWarmup extends StatelessWidget {
+  const _ShaderWarmup();
+
+  @override
+  Widget build(BuildContext context) {
+    Widget shell({required ShellShape shape, double content = 0.5}) => SizedBox(
+          width: AppTheme.notifyWidth,
+          child: ReminderCardShell(
+            acrylic: true,
+            shape: shape,
+            child: MaterialisingContent(
+              t: content,
+              child: ReminderRow(
+                title: 'Warm',
+                time: '18:00',
+                lede: 'in 5 minutes',
+                priority: 2,
+                showMark: true,
+                isLastRow: true,
+                showDivider: false,
+                striking: true,
+                onOpen: () {},
+                onDone: () {},
+                onCollapsed: () {},
+                onPressedChanged: (_) {},
+              ),
+            ),
+          ),
+        );
+
+    return Positioned(
+      left: 0,
+      top: 0,
+      child: IgnorePointer(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // THE ENTRANCE ITSELF, not just its destination.
+            //
+            // Warming only the settled card left the first card's ENTRANCE
+            // paying its own way: measured, it took 150 ms to grow from 132 px
+            // to 232 while the third card did it in 76. It started on time and
+            // then crawled, which is the "первая не такая же плавная" nobody
+            // could point at in a still frame.
+            //
+            // Every frame of the morph is a different silhouette with a
+            // different corner radius, a differently-sized shadow blur and a
+            // different ImageFilter sigma inside MaterialisingContent — none of
+            // which the settled shape ever draws. Three points across the
+            // spring cover the range the real entrance sweeps.
+            shell(shape: const ShellShape(widthT: 0.15, heightT: 0.10), content: 0.0),
+            shell(shape: const ShellShape(widthT: 0.55, heightT: 0.45), content: 0.25),
+            shell(shape: const ShellShape(widthT: 0.85, heightT: 0.80), content: 0.75),
+            shell(shape: ShellShape.settled, content: 1.0),
+            // ...and the lifted, hovered state, whose rim gradients and wider
+            // shadow are another set of pipelines again.
+            shell(shape: ShellShape.settled),
+            shell(
+              shape: const ShellShape(
+                collapseT: 0.5,
+                collapseCenter: Offset(312, 28),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -137,6 +244,12 @@ class _NotifySceneState extends State<_NotifyScene>
   int _lifeMs = 7000;
   Timer? _life;
   Timer? _shadowLag;
+
+  /// If `revealed` never arrives — a native side that answered `reveal` and
+  /// then died, or a message lost between engines — the card would sit frozen
+  /// as a seed pill forever, which is a card that does not exist. Start the
+  /// entrance anyway. Late is a flaw; absent is a bug.
+  Timer? _entranceFallback;
   bool _leaving = false;
   bool _hovering = false;
   bool _pressed = false;
@@ -155,6 +268,12 @@ class _NotifySceneState extends State<_NotifyScene>
   late final AnimationController _drag;
   bool _dragging = false;
 
+  /// Once per PROCESS, not per card.
+  static bool _warmedOnce = false;
+
+  /// True only across the two cloaked frames of the first [_reveal].
+  bool _warmingShaders = false;
+
   @override
   void initState() {
     super.initState();
@@ -171,13 +290,24 @@ class _NotifySceneState extends State<_NotifyScene>
     _warm = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 300));
     _drag = AnimationController.unbounded(vsync: this);
+    // The window's shape follows the card wherever it goes, on every frame of
+    // every path that moves it — drag, flick, settle — without each of those
+    // having to remember to say so. AFTER the frame, never from this listener
+    // directly: see [_pushRegionAfterFrame].
+    _drag.addListener(_pushRegionAfterFrame);
     _channel.setMethodCallHandler(_onNative);
+    // The runner may not speak to this engine before this line runs, so it is
+    // told rather than left to guess. It answers by asking for the shader
+    // warm-up — the thing that has to happen minutes before the first reminder
+    // rather than in front of it.
+    _channel.invokeMethod<void>('ready').ignore();
   }
 
   @override
   void dispose() {
     _life?.cancel();
     _shadowLag?.cancel();
+    _entranceFallback?.cancel();
     _mw.dispose();
     _mh.dispose();
     _shadow.dispose();
@@ -191,23 +321,77 @@ class _NotifySceneState extends State<_NotifyScene>
   Future<dynamic> _onNative(MethodCall call) async {
     switch (call.method) {
       case 'warmup':
-        _warmup();
+        await _warmup();
         return null;
       case 'show':
         _show(call.arguments);
         return null;
       case 'reveal':
         return await _reveal();
+      case 'revealed':
+        _beginEntrance();
+        return null;
     }
     return null;
   }
 
-  /// The display changed geometry while this window sat hidden. An engine only
-  /// adopts a resize while it is PRESENTING, so this keeps frames flowing while
-  /// every pixel stays invisible.
-  void _warmup() {
+  /// The window is UNCLOAKED and on screen. Only now may the entrance play.
+  ///
+  /// Splitting this out of `reveal` is the whole fix for "I only see the last
+  /// 20 % of the animation". `reveal` used to start the spring on its first
+  /// line and then wait — for two frames once, and after the rasterisation gate
+  /// landed, for considerably more than two — with the window cloaked the
+  /// entire time. The card was busy arriving at something nobody could see yet,
+  /// and what finally appeared was whatever was left of it. On the very first
+  /// card of a session, where shader compilation is also on that path, there
+  /// was nothing left at all: it simply cut in, which is exactly what got
+  /// reported.
+  ///
+  /// Under the cloak the card now sits STILL, at seed. The spring starts here.
+  void _beginEntrance() {
+    _entranceFallback?.cancel();
+    if (!mounted || _leaving || _cards.isEmpty) return;
+    if (_mw.value > 0.0) return; // already running or already home
+    if (MediaQuery.of(context).disableAnimations) {
+      _mw.value = 1.0;
+      _mh.value = 1.0;
+      _shadow.value = 1.0;
+    } else {
+      _startMorph();
+    }
+    _armLife();
+  }
+
+  /// Frames on an invisible window, for two different callers.
+  ///
+  /// The runner asks for this ONCE AT STARTUP, and again whenever the display
+  /// changed geometry while the window sat hidden (an engine only adopts a
+  /// resize while it is PRESENTING). Both want the same thing: real frames, no
+  /// pixels reaching anybody.
+  ///
+  /// The startup call is what takes shader compilation off the path of the
+  /// first reminder someone ever gets. Skia compiles SkSL on first draw, and
+  /// the first card was paying for three MaskFilter.blur passes, two gradients
+  /// and an ImageFilter at the exact moment its whole value is landing at once.
+  /// Done here, minutes earlier on a window nobody is looking at, the first
+  /// card behaves like the tenth.
+  ///
+  /// SELF-VERIFYING, because "does a cloaked window rasterise" is an empirical
+  /// question and not one to bet a feature on. `_awaitRaster` reports whether it
+  /// actually saw the GPU finish frames; only then is the warm-up recorded as
+  /// done. If the compositor declined, `_warmedOnce` stays false and the first
+  /// show warms under its own cloak exactly as before — slower, still correct.
+  Future<void> _warmup() async {
     _resetMotion();
     _warm.forward(from: 0.0);
+    if (_warmedOnce) return;
+    setState(() => _warmingShaders = true);
+    final rastered = await _awaitRaster();
+    if (!mounted) return;
+    setState(() => _warmingShaders = false);
+    // Take it back off the surface before anyone can be shown this window.
+    await _awaitRaster();
+    _warmedOnce = rastered;
   }
 
   void _resetMotion() {
@@ -276,27 +460,149 @@ class _NotifySceneState extends State<_NotifyScene>
     _pushRegionAfterFrame();
   }
 
-  /// Answered AFTER two frames — the reply is what uncloaks the window, so it
-  /// must not come back before real pixels exist.
+  /// Answered once a frame has actually been RASTERISED — the reply is what
+  /// uncloaks the window, so it must not come back before real pixels exist.
+  ///
+  /// It deliberately does NOT start the entrance. Everything below happens with
+  /// the window invisible, and a spring that runs while nobody can see it is a
+  /// spring nobody sees. The card holds still at seed until the runner reports
+  /// back through `revealed` — see [_beginEntrance].
   Future<List<int>?> _reveal() async {
     _resetMotion();
-    // Reduce Motion is not a nice-to-have: for someone with vestibular
-    // sensitivity a shape springing open is a symptom, not a delight. It still
-    // appears, it just appears — no morph, no spring.
-    if (MediaQuery.of(context).disableAnimations) {
-      _mw.value = 1.0;
-      _mh.value = 1.0;
-      _shadow.value = 1.0;
-    } else {
-      _startMorph();
-    }
-    _armLife();
+    _entranceFallback?.cancel();
 
-    await SchedulerBinding.instance.endOfFrame;
-    await SchedulerBinding.instance.endOfFrame;
-    final r = _hitRect();
+    // SHADER WARM-UP, paid for under the cloak.
+    //
+    // We are on Skia, not Impeller (FLUTTER_IMPELLER in the runner's CMake is
+    // read by nobody), so the first draw of each pipeline this card needs is a
+    // runtime SkSL compile — on the one window whose entire value is landing
+    // instantly. That compile is what used to overrun the uncloak fallback and
+    // flash a grey slab.
+    //
+    // The window is CLOAKED across all of this: the cloak goes on in ShowCards
+    // and comes off in the reply to this method, and the region is 1x1 until
+    // that reply lands. So the warm-up is invisible twice over, which is why it
+    // can afford to be drawn ON SCREEN — see [_ShaderWarmup].
+    if (!_warmedOnce) {
+      _warmedOnce = true;
+      setState(() => _warmingShaders = true);
+      await _awaitFrames();
+      if (!mounted) return null;
+      setState(() => _warmingShaders = false);
+    }
+
+    // ...and once more, so what the uncloak reveals is the real card alone.
+    // On the first show this also takes the warm-up back off the surface; on
+    // every later one it is the single wait that matters.
+    await _awaitFrames();
+    if (!mounted) return null;
+    final r = _hitRect(_drag.value);
     _lastRegion = r;
+    _regionDrag = _drag.value;
+
+    // START THE ENTRANCE HERE, on the same breath as the answer.
+    //
+    // Returning this rect is what makes the runner apply the region and
+    // uncloak, so this line and the window appearing are the same instant give
+    // or take a frame. Every looser arrangement was measured and cost real
+    // time: waiting for the runner's `revealed` call back into Dart left the
+    // card sitting on screen as a motionless seed pill for about 135 ms before
+    // it sprang open, and a 60 ms timer only shortened that. A still pill
+    // followed by a spring reads worse than either half of it.
+    //
+    // The trade is that the first frame or two of the spring may play while the
+    // window is still cloaked — a few per cent of 280 ms, against a third of a
+    // second of visible stillness. `revealed` stays wired as a belt for the
+    // path where this object somehow never gets asked; [_beginEntrance] is
+    // idempotent, so both firing changes nothing.
+    _beginEntrance();
     return r;
+  }
+
+  /// Completes when a frame built from here on has actually been RASTERISED —
+  /// not merely built.
+  ///
+  /// `SchedulerBinding.endOfFrame` resolves when the UI THREAD is finished with
+  /// a frame: built, laid out, painted, layer tree handed over. The raster
+  /// thread has not touched it yet. On the first card of a session that thread
+  /// is compiling SkSL for three MaskFilter.blur passes, two gradients and an
+  /// ImageFilter, and it runs far behind — so counting endOfFrames and then
+  /// uncloaking revealed a window whose swapchain had never presented. That is
+  /// the cold-swapchain law from the pill saga, in a new window: what reaches
+  /// the screen is whatever the compositor had, which is nothing, and the card
+  /// then appears to catch up with itself. The grey flash and the "it arrives
+  /// laggy" are the same defect seen from two angles.
+  ///
+  /// TWO qualifying passes, not one. A raster pass can finish after the mark
+  /// and still belong to a frame built BEFORE it, if the raster thread was
+  /// behind — which, mid shader compile, is exactly the state it is in. The
+  /// second is provably no older than ours.
+  /// Frames, cheaply — the gate on the path a person is actually waiting on.
+  ///
+  /// NOT [_awaitRaster]. `addTimingsCallback` is a PROFILING api: the engine
+  /// batches FrameTiming records and flushes them periodically rather than at
+  /// the end of each frame, so waiting on two of them cost this path its whole
+  /// 400 ms timeout. Measured: uncloak at 462 ms after the ask, against 62 ms
+  /// for the frame itself. That delay is what read as "it appears late and the
+  /// sound arrives before the picture" — the chime goes out when ShowCards
+  /// returns, and the picture was waiting on a profiler.
+  ///
+  /// Nothing is lost by being cheap here. Uncloaking a frame early can only
+  /// expose an unpainted window, and an unpainted window has nothing to show:
+  /// the region is 1x1 until this answer lands, and WM_ERASEBKGND is claimed so
+  /// the class brush never fills anything. The rasterisation guarantee stopped
+  /// being what stands between a grey slab and the screen the moment those two
+  /// existed.
+  Future<void> _awaitFrames() async {
+    // ONE. It buys the only thing still worth buying here: the card has been
+    // laid out, so `_hitRect` describes a real box rather than a guess. It used
+    // to be two, and before that two plus a rasterisation gate, and every extra
+    // wait was a millisecond the person spent looking at nothing while the
+    // chime had already played.
+    await SchedulerBinding.instance.endOfFrame;
+  }
+
+  /// Returns TRUE only if real rasterisation was observed, FALSE if it gave up
+  /// waiting. Callers use that to tell "the GPU did the work" from "we stopped
+  /// asking" — which is the difference between a warm-up that warmed something
+  /// and one that merely took time.
+  ///
+  /// Only for the STARTUP warm-up, where nobody is waiting and a batched
+  /// profiling api is affordable. Never on the path to showing a card.
+  Future<bool> _awaitRaster() async {
+    await SchedulerBinding.instance.endOfFrame;
+    if (!mounted) return false;
+
+    final markUs = DateTime.now().microsecondsSinceEpoch;
+    final done = Completer<void>();
+    var seen = 0;
+
+    void onTimings(List<ui.FrameTiming> timings) {
+      for (final t in timings) {
+        final finished =
+            t.timestampInMicroseconds(ui.FramePhase.rasterFinishWallTime);
+        if (finished < markUs) continue;
+        if (++seen >= 2) {
+          if (!done.isCompleted) done.complete();
+          return;
+        }
+      }
+      // Nothing here is guaranteed to be animating — under Reduce Motion the
+      // morph is skipped entirely — and a frame that is never scheduled is a
+      // frame that never rasterises.
+      if (!done.isCompleted) SchedulerBinding.instance.scheduleFrame();
+    }
+
+    SchedulerBinding.instance.addTimingsCallback(onTimings);
+    SchedulerBinding.instance.scheduleFrame();
+    // Never hang. The native side has its own 700 ms net for a dead engine;
+    // this one is for an engine that is merely not reporting.
+    await Future.any([
+      done.future,
+      Future<void>.delayed(const Duration(milliseconds: 400)),
+    ]);
+    SchedulerBinding.instance.removeTimingsCallback(onTimings);
+    return done.isCompleted;
   }
 
   /// Both axes on the SAME response, so the card has a moment of arrival — and
@@ -339,7 +645,7 @@ class _NotifySceneState extends State<_NotifyScene>
   /// silhouette, deliberately, because a control you cannot see is a control
   /// you must not be able to trigger. The region is the window's shape; the
   /// silhouette is the target.
-  List<int>? _hitRect() {
+  List<int>? _hitRect(double dx) {
     final ctx = _cardKey.currentContext;
     if (ctx == null) return null;
     final box = ctx.findRenderObject();
@@ -347,44 +653,76 @@ class _NotifySceneState extends State<_NotifyScene>
     final media = MediaQuery.of(context);
     final dpr = media.devicePixelRatio;
     final o = box.localToGlobal(Offset.zero);
-    // Being carried away: the region has to open all the way to the edge of the
-    // screen, or the card slides out from under its own window and is sheared
-    // off along a hard vertical line — with the shadow cut in half beside it,
-    // which is the giveaway. The window's shape is not a decoration; it is
-    // where this window exists at all.
+    // Being carried away, the region TRAVELS WITH THE CARD. It must not simply
+    // open to the screen edge.
     //
-    // BOTH edges, because at drag start the direction is not known yet. The
-    // band closes again the moment the card settles home — an open region is a
-    // full-width invisible window, and it eats every click inside it.
-    final travelling = _dragging || _drag.value != 0;
-    final left = travelling ? 0.0 : (o.dx - _kPadSide) * dpr;
-    final right = travelling
-        ? media.size.width * dpr
-        : (o.dx + box.size.width + _kPadSide) * dpr;
+    // On Windows 11 the window carries a DWM system backdrop over its whole
+    // extended frame, so every pixel the region exposes shows acrylic — not the
+    // desktop. A full-width band therefore paints a grey stripe across the
+    // screen on either side of the card for as long as a drag is live.
+    //
+    // `_cardKey` sits above the travelling transform, so `o.dx` is the RESTING
+    // x and the carried offset has to be added back here by hand. It is passed
+    // in rather than read from `_drag` because it is deliberately NOT the
+    // current offset — see [_pushRegionNow].
     return [
-      left.floor(),
+      ((o.dx + dx - _kPadSide) * dpr).floor(),
       ((o.dy - _kPadTop) * dpr).floor(),
-      right.ceil(),
+      ((o.dx + dx + box.size.width + _kPadSide) * dpr).ceil(),
       ((o.dy + box.size.height + _kPadBottom) * dpr).ceil(),
       (AppTheme.notifyRadius * dpr).round(),
     ];
   }
 
-  /// The card grows a row, or a row collapses away — the window's shape has to
-  /// follow, or the bottom of the card stops taking clicks.
+  /// The card grew a row, lost one, or moved. Either way the window's shape has
+  /// to follow, or the bottom of the card stops taking clicks and a carried
+  /// card is sheared along a hard line.
+  ///
+  /// ALWAYS after the frame. Pushed from an animation listener instead, this
+  /// ran in the animation phase — before build, layout and paint — while
+  /// `SetWindowRgn` takes effect at the compositor's next pass. The shape
+  /// arrived ahead of the pixels it was the shape of.
   void _pushRegionAfterFrame() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _leaving) return;
-      final r = _hitRect();
-      if (r == null) return;
-      if (_lastRegion != null && _listEq(_lastRegion!, r)) return;
-      _lastRegion = r;
-      // .ignore() for the same reason as Sfx (lib/core/sfx/sfx.dart): this
-      // engine returns before runZonedGuarded, so a rejectable future left
-      // behind here surfaces as an unhandled async error with nobody to catch
-      // it. Fire and forget — a shape that fails to update is not fatal.
-      _channel.invokeMethod<void>('region', r).ignore();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _pushRegionNow());
+  }
+
+  /// The region must never describe a position the card has not been PAINTED at
+  /// yet.
+  ///
+  /// Even from a post-frame callback the newest offset is still one present
+  /// ahead of the screen: the UI thread has finished with this frame, the
+  /// raster thread has not. Shape the window for that newest offset and its
+  /// leading rounded corner opens a sliver of window beyond where the shadow
+  /// has been drawn — a bright arc that appears and vanishes every frame of a
+  /// slow drag, which is exactly what a flickering `[` is.
+  ///
+  /// So the region is shaped for the offset of the frame BEFORE, which is the
+  /// one actually on screen. The lag is capped below [_kPadSide] so that at
+  /// flick speeds — where a frame can carry the card further than its own
+  /// padding — the trailing region can still never bite into the card itself.
+  /// What it clips instead is the far tail of the shadow, about 4/255.
+  static const double _kRegionLagMax = 32.0;
+  double _regionDrag = 0.0;
+
+  void _pushRegionNow() {
+    if (!mounted || _leaving) return;
+    final now = _drag.value;
+    final travelled = now - _regionDrag;
+    final lag = travelled.abs() > _kRegionLagMax
+        ? _kRegionLagMax * (travelled.isNegative ? -1.0 : 1.0)
+        : travelled;
+    _regionDrag = now;
+    final r = _hitRect(now - lag);
+    if (r == null) return;
+    // Deduped on the integer rect, so a drag only reaches the OS on the frames
+    // where the region actually differs.
+    if (_lastRegion != null && _listEq(_lastRegion!, r)) return;
+    _lastRegion = r;
+    // .ignore() for the same reason as Sfx (lib/core/sfx/sfx.dart): this
+    // engine returns before runZonedGuarded, so a rejectable future left
+    // behind here surfaces as an unhandled async error with nobody to catch
+    // it. Fire and forget — a shape that fails to update is not fatal.
+    _channel.invokeMethod<void>('region', r).ignore();
   }
 
   static bool _listEq(List<int> a, List<int> b) {
@@ -407,8 +745,40 @@ class _NotifySceneState extends State<_NotifyScene>
     _life = Timer(Duration(milliseconds: _lifeMs), _leave);
   }
 
+  /// TWO sources, one answer.
+  ///
+  /// The card's own MouseRegion is exactly card-sized, and the dismiss button
+  /// deliberately overhangs the top-left corner. Moving from the card onto that
+  /// overhang is an exit from one and an enter into the other, and read
+  /// separately it meant the button disappeared from under the pointer that was
+  /// reaching for it while the dismissal clock quietly restarted.
+  ///
+  /// Flutter dispatches every exit and then every enter inside a single mouse
+  /// tracker update, and `setState` only marks the tree dirty, so the moment
+  /// where both are false never reaches a frame. The timer work below is
+  /// synchronous for the same reason: the cancel lands before anything ticks.
+  bool _hoverCard = false;
+  bool _hoverDismiss = false;
+
   void _onHover(bool over) {
-    _hovering = over;
+    if (_hoverCard == over) return;
+    _hoverCard = over;
+    _settleHover();
+  }
+
+  void _onDismissHover(bool over) {
+    if (_hoverDismiss == over) return;
+    _hoverDismiss = over;
+    _settleHover();
+  }
+
+  void _settleHover() {
+    final over = _hoverCard || _hoverDismiss;
+    if (_hovering == over) return;
+    // setState, because the dismiss button is offered on exactly this bit and
+    // it lives inside a builder that would otherwise only run when an
+    // animation ticks.
+    setState(() => _hovering = over);
     if (over) {
       _life?.cancel();
     } else if (_lifeMs > 0) {
@@ -446,8 +816,9 @@ class _NotifySceneState extends State<_NotifyScene>
   /// which is macOS's own "shrink to a circle and fade", aimed at the circle
   /// that was actually clicked.
   Future<void> _collapseIntoRing(String id) async {
-    await Future<void>.delayed(
-        AppTheme.notifyTickDrawDuration + AppTheme.notifyDonePause);
+    // Hands over WHILE the tick is still being drawn, not after it. See
+    // AppTheme.notifyDoneHandoff — the pause this replaced was dead air.
+    await Future<void>.delayed(AppTheme.notifyDoneHandoff);
     if (!mounted || _leaving) return;
     if (MediaQuery.of(context).disableAnimations) {
       await _leave();
@@ -492,6 +863,7 @@ class _NotifySceneState extends State<_NotifyScene>
 
   Future<void> _close() async {
     if (!mounted) return;
+    _entranceFallback?.cancel();
     setState(() {
       _cards = const [];
       _striking.clear();
@@ -500,6 +872,14 @@ class _NotifySceneState extends State<_NotifyScene>
       _pressed = false;
     });
     _lastRegion = null;
+    _regionDrag = 0.0;
+    // The card is gone, so no exit event is ever coming for whatever the
+    // pointer was last over. Left set, the NEXT card would believe it was born
+    // hovered — it would never arm its own dismissal clock, and it would wear
+    // the close button from its first frame.
+    _hoverCard = false;
+    _hoverDismiss = false;
+    _hovering = false;
     await _channel.invokeMethod('closed');
   }
 
@@ -544,6 +924,7 @@ class _NotifySceneState extends State<_NotifyScene>
           ),
         ),
         if (_cards.isNotEmpty) _positioned(),
+        if (_warmingShaders) const _ShaderWarmup(),
       ],
     );
   }
@@ -556,17 +937,12 @@ class _NotifySceneState extends State<_NotifyScene>
       width: AppTheme.notifyWidth,
       child: _travelling(),
     );
-    switch (kNotifyCorner) {
-      case NotifyCorner.bottomRight:
-        return Positioned(right: _kEdgeInset, bottom: _kEdgeInset, child: card);
-      case NotifyCorner.bottomCenter:
-        return Positioned(
-          left: 0,
-          right: 0,
-          bottom: 48,
-          child: Center(child: card),
-        );
-    }
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 48,
+      child: Center(child: card),
+    );
   }
 
   Widget _travelling() {
@@ -579,8 +955,6 @@ class _NotifySceneState extends State<_NotifyScene>
         _dragging = true;
         _drag.stop();
         _life?.cancel();
-        // Open the window's shape BEFORE the card starts moving.
-        _pushRegionAfterFrame();
       },
       // No setState: the controller is in the AnimatedBuilder's merge, so a
       // drag frame repaints the shell and leaves `child` — the whole row
@@ -641,8 +1015,8 @@ class _NotifySceneState extends State<_NotifyScene>
           // for about one frame at a fifth of its opacity, and everything a
           // person actually saw was an anonymous capsule travelling.
           final collapseFade = 1.0 -
-              ((col - AppTheme.notifyCollapseFadeStart) /
-                      (1.0 - AppTheme.notifyCollapseFadeStart))
+              ((col - AppTheme.notifyCollapseShapeEnd) /
+                      (1.0 - AppTheme.notifyCollapseShapeEnd))
                   .clamp(0.0, 1.0);
 
           // The contents MATERIALISE: opacity and blur move together, over the
@@ -664,6 +1038,22 @@ class _NotifySceneState extends State<_NotifyScene>
                 pressed: _pressed,
                 paintKey: _paintKey,
                 onHoverChanged: _onHover,
+                // Offered only once the card has actually ARRIVED, and only
+                // while it is not on its way out. `isMorphing` is the honest
+                // test: with the pointer already resting where the card lands,
+                // hover is true from the first frame, and without this the
+                // button rode up on a shell that was still springing open —
+                // a control aimed at a moving target. One offered during the
+                // exit is a promise the card cannot keep.
+                overlay: DismissButton(
+                  visible: _hovering &&
+                      !_leaving &&
+                      !shape.isMorphing &&
+                      col <= 0 &&
+                      ex <= 0,
+                  onTap: _leave,
+                  onHoverChanged: _onDismissHover,
+                ),
                 child: MaterialisingContent(
                   t: contentFade,
                   child: child!,

@@ -494,34 +494,57 @@ class AppTheme {
   static const double notifyTiltY = 0.052;
   static const Duration notifyHoverDuration = Duration(milliseconds: 160);
 
-  // NO POINTER-TRACKING LIGHT. Retired 2026-08-12 after two live looks.
+  /// THE SHEEN: the body sees the same lamp the rim has been describing.
+  ///
+  /// A surface under a directional source is never one flat colour, and the
+  /// card's own rim painter spends forty lines asserting an overhead light that
+  /// the body then ignored. That contradiction is most of the difference
+  /// between graphite that reads as a material and graphite that reads as a
+  /// filled rectangle with a border.
+  ///
+  /// Deliberately the QUIETEST of the three lights, so they read as one
+  /// physical situation instead of three effects: fixed lamp on the rim
+  /// (strongest) → travelling pool at 0.075 → this. About seven levels out of
+  /// 255 at the top edge, dying to nothing by 0.55 of the height. A ramp that
+  /// ran the whole way would be a gradient fill; one that dies in the upper
+  /// half is light landing.
+  static const double notifyBodySheen = 0.030;
+
+  // NO LIGHT FOLLOWS THE POINTER. Retired 2026-08-14, for the second time and
+  // this time for good.
   //
-  // There were five constants here — a surface specular pool, a rim lens, their
-  // vertical squash, and a counter-slide factor that made the pool travel
-  // against the cursor as the reflection of a fixed lamp. Each pass was more
-  // physically defensible than the last, and every one of them still read as a
-  // web card: the second worst of all, because motion AGAINST the pointer draws
-  // more attention to the fact that a decoration is moving.
+  // Five constants lived here across three attempts: a specular pool on the
+  // surface, a lens that brightened whichever rim the cursor was nearest, their
+  // shared vertical squash, and once a counter-slide that made the pool travel
+  // AGAINST the cursor as the reflection of a fixed lamp. Each pass was more
+  // physically defensible than the last and every one of them still read as a
+  // web card up close.
   //
-  // The reference is unambiguous. macOS notification banners do not respond to
-  // pointer position at all — no travelling highlight, no glow. Hover reveals
-  // an affordance; it does not light the glass. A specular that follows focus
-  // is a visionOS and tvOS idiom, and those are focus-driven surfaces on
-  // displays nobody points at. On a desktop banner it is landing-page grammar.
-  //
-  // What is left is ONE fixed overhead source, entirely on the rim, and a card
-  // that answers the pointer with orientation instead: it leans, it lifts, its
-  // shadow spreads. The lamp never moves, because lamps do not follow hands.
+  // The keeper is the honest half of the same physics: light falls from ABOVE,
+  // so the top rim is bright, the bottom carries a faint caustic, the body has
+  // a sheen down its upper half, and a dark boundary sits outside all of it.
+  // None of that moves, because a lamp does not follow a hand. Hover is
+  // answered by the rim getting brighter and by the card leaning, lifting and
+  // spreading its shadow.
   //
   // Consequence worth keeping: neither the body nor the rim depends on pointer
-  // position now, so `shouldRepaint` returns false while the mouse moves and
-  // the whole card stops repainting on hover — only the tilt Transform changes,
+  // position, so `shouldRepaint` returns false while the mouse moves and the
+  // card stops repainting on hover entirely — only the tilt matrix changes,
   // which is a compositing operation.
 
-  /// Per-frame easing of the TILT toward the pointer. At 0.16 it lags by
-  /// roughly seven frames — the lean CHASES the cursor instead of being glued
-  /// to it, and that lag is the entire difference between alive and sticky.
-  static const double notifyLightEase = 0.16;
+  /// How long the LEAN takes to cover 63 % of the distance to the pointer.
+  /// The lag is the entire difference between alive and sticky: the light
+  /// CHASES the cursor instead of being glued to it.
+  ///
+  /// In SECONDS, not per-frame. The old constant eased by a fixed 0.16 of the
+  /// remaining distance every tick, so the behaviour was a function of refresh
+  /// rate — half the lag on a 120 Hz panel, double on 30. What actually matters
+  /// is not the amplitude (48 ms of lag instead of 96 is arguably nicer) but
+  /// the stop condition: `distance < 0.15` is now reached in bounded WALL-CLOCK
+  /// time whatever the display does, so the ticker shuts off promptly instead
+  /// of repainting the card for an extra quarter second after the cursor has
+  /// stopped. 0.096 s reproduces the old feel exactly at 60 Hz.
+  static const double notifyLightTau = 0.096;
 
   /// Press feedback on the body. Scale on live text, so filterQuality is
   /// mandatory while it moves (section 7 of the manifest).
@@ -534,6 +557,54 @@ class AppTheme {
 
   /// Pointer over the card holds it; leaving restarts a shorter clock.
   static const Duration notifyHoverGrace = Duration(milliseconds: 2500);
+
+  // ── Dismiss button ──────────────────────────────────────────────────────────
+  //
+  // TOP-LEFT, straddling the corner, revealed only under the pointer. macOS's
+  // own placement, and the only free corner here: the done ring owns the right,
+  // and two small circles at one end read as a pair of buttons rather than as
+  // an action and a way out.
+  //
+  // On hover ONLY, and that is the point. A banner wearing a permanent close
+  // button is a dialog; this card's entire argument is that it leaves by
+  // itself and the button is there for the one time you want it gone now.
+
+  /// 18 px, the ring's own diameter. The two controls on this card are the same
+  /// size because they are the same kind of thing.
+  static const double notifyDismissSize = 18.0;
+
+  /// Where its centre sits, in from the card's top-left corner. Not (0,0): a
+  /// circle centred on the corner POINT floats diagonally off a 16 px radius
+  /// and reads as detached. At 5 px roughly two thirds of it lies on the card.
+  static const double notifyDismissInset = 5.0;
+
+  /// Invisible margin around the disc. The visual is 18 px; the target is 34.
+  /// A control this small must not also be hard to hit.
+  static const double notifyDismissTouchPad = 8.0;
+
+  /// Arm length of the cross, as a fraction of the radius.
+  static const double notifyDismissGlyph = 0.38;
+
+  /// Springs IN — response 0.30 s, bounce 0.22 — because arriving is an offer.
+  /// Leaving is a plain ease: the control getting out of the way must not ask
+  /// for the eye a second time.
+  static const double notifyDismissStiffness = 438.6;
+  static const double notifyDismissDamping = 29.4;
+  static const Duration notifyDismissHide = Duration(milliseconds: 130);
+
+  /// Its own hover and press. The grow is small — this thing is 18 px, and 10 %
+  /// of 18 is not quite two pixels, which is the difference between answering
+  /// the pointer and lunging at it.
+  static const Duration notifyDismissRevealHover = Duration(milliseconds: 140);
+  static const double notifyDismissHoverGrow = 0.10;
+  static const double notifyDismissPressScale = 0.90;
+
+  /// How far the pointer may travel between down and up and still count as a
+  /// click. The button uses a raw Listener rather than a tap recogniser (a
+  /// recogniser's deadline swallowed the press feedback), so it is outside the
+  /// gesture arena and the card's own swipe sees the same events — without this
+  /// a swipe that began on the button would carry the card away AND dismiss it.
+  static const double notifyDismissSlop = 8.0;
 
   // ── The ring ────────────────────────────────────────────────────────────────
 
@@ -572,20 +643,38 @@ class AppTheme {
   static const Duration notifyDismissDuration = Duration(milliseconds: 190);
 
   /// Answered: the card collapses INTO the ring you just pressed and winks out.
-  /// The pause first, so the tick is actually seen.
-  static const Duration notifyDonePause = Duration(milliseconds: 140);
-  static const Duration notifyCollapseToRing = Duration(milliseconds: 320);
+  ///
+  /// This used to be a QUEUE — draw the tick for 260 ms, then wait 140 doing
+  /// nothing, then collapse for 320 — and the 140 was dead air. The tick has
+  /// already been seen; it was drawn over a quarter of a second. Waiting after
+  /// it does not make it more legible, it just makes the card slow to get out
+  /// of the way of the thing you are actually doing.
+  ///
+  /// So: OVERLAP. The collapse begins at 75 % of the tick, while the last
+  /// stroke is still landing — which is exactly the correction this file
+  /// already applied to the entrance (contents materialise INTO a shell that is
+  /// still arriving) and never applied to the exit. Total 195 + 380 = 575 ms
+  /// against 720, and none of it is spent holding still.
+  static const Duration notifyDoneHandoff = Duration(milliseconds: 195);
+  static const Duration notifyCollapseToRing = Duration(milliseconds: 380);
 
   /// Half the ring's own 18 px. It was 11, which overshot the target by 2 px on
   /// every side — the card came to rest not quite on the thing it was aiming at.
   static const double notifyRingCollapseRadius = 9.0;
 
-  /// The shell only starts dissolving once it is ALREADY a circle.
+  /// Where the SHAPE finishes, as a fraction of [notifyCollapseToRing]. After
+  /// this the geometry is done and the remaining time is pure fade.
   ///
-  /// It used to begin at 0.72, and the shape does not become circular until
-  /// about 0.95 — so the circle existed for roughly one frame, at 18 % opacity.
-  /// Everything a person actually saw was an anonymous capsule travelling.
-  static const double notifyCollapseFadeStart = 0.88;
+  /// The shell may only dissolve once it is ALREADY a circle — an anonymous
+  /// capsule fading out mid-travel is not "the completion winking out", it is a
+  /// card being taken away. The old code expressed that as a fade threshold of
+  /// 0.88 on a 320 ms clock, which was the right idea with no room left to do
+  /// it in: 12 % of 320 ms is 38 ms, ONE FRAME on a 30 Hz panel.
+  ///
+  /// Stated as the end of the shape instead, the geometry lands at 296 ms and
+  /// 84 ms remain for the wink — 2.5 frames at 30 Hz, ten at 120. One constant
+  /// for both facts, so the shape and the fade cannot drift apart again.
+  static const double notifyCollapseShapeEnd = 0.78;
 
   /// How green the shell goes as it is drawn in. At 0.22 over a near-black body
   /// the terminal dot measured rgb(39, 66, 40) — dark olive — against a tick of

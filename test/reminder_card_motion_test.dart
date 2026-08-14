@@ -203,13 +203,56 @@ void main() {
       expect(done.radius(size), closeTo(r.shortestSide / 2, 0.001));
     });
 
-    test('halfway through the collapse it is a capsule, not a rectangle', () {
+    test('the collapse passes through a capsule, never a rounded rectangle', () {
+      // This used to assert `radius > 16` at collapseT 0.5 and that assertion
+      // was measuring the TIMING, not the shape. The clock midpoint is no
+      // longer the shape midpoint: the geometry finishes at
+      // `notifyCollapseShapeEnd` and the rest of the clock is the wink, so by
+      // half the clock the shell is already about 80 % of the way in and is
+      // therefore SMALL. A small radius is the right answer there — what has to
+      // hold is that it is fully round.
       const half = ShellShape(collapseT: 0.5, collapseCenter: Offset(312, 36));
       final r = half.rect(size);
-      // Well past the resting 16: the curvature travels WITH the shape.
-      expect(half.radius(size), greaterThan(AppTheme.notifyRadius));
       expect(r.width, lessThan(size.width));
       expect(r.height, lessThan(size.height));
+      expect(
+        half.radius(size),
+        closeTo(r.shortestSide / 2, 0.001),
+        reason: 'mid-collapse the silhouette must sit at MAXIMUM curvature — a '
+            'capsule. Anything less is a card being shrunk, not a card being '
+            'drawn into the ring.',
+      );
+
+      // ...and early on, while it is still recognisably a card, the curvature
+      // has already grown past the resting 16 rather than snapping at the end.
+      const early =
+          ShellShape(collapseT: 0.25, collapseCenter: Offset(312, 36));
+      expect(early.radius(size), greaterThan(AppTheme.notifyRadius));
+    });
+
+    test('the shape finishes before the clock does, leaving room to wink', () {
+      // The defect this guards: the fade used to get 12 % of a 320 ms collapse
+      // — 38 ms, one frame at 30 Hz — because the shell was still becoming a
+      // circle at the instant it was supposed to be fading out of one.
+      const centre = Offset(312, 36);
+      const atShapeEnd = ShellShape(
+        collapseT: AppTheme.notifyCollapseShapeEnd,
+        collapseCenter: centre,
+      );
+      final r = atShapeEnd.rect(size);
+      expect(r.width, closeTo(r.height, 0.001),
+          reason: 'the geometry must already be a circle here');
+      expect(r.center.dx, closeTo(centre.dx, 0.001));
+
+      // ...and it does not keep moving afterwards. The rest of the clock is
+      // opacity and nothing else.
+      const later = ShellShape(collapseT: 0.92, collapseCenter: centre);
+      expect(later.rect(size), atShapeEnd.rect(size));
+
+      final winkMs = AppTheme.notifyCollapseToRing.inMilliseconds *
+          (1.0 - AppTheme.notifyCollapseShapeEnd);
+      expect(winkMs, greaterThan(66.0),
+          reason: 'two frames at 30 Hz is the floor for a fade to be seen');
     });
   });
 }

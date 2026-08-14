@@ -72,6 +72,16 @@ class NotifyWindow : public Win32Window {
   // devicePixelRatio, so no DPI arithmetic happens on this side.
   void ApplyHitRegion(const flutter::EncodableValue* hit);
 
+  // Shape the window down to one pixel, from the moment it is shown until Dart
+  // answers `reveal`. Belt to the cloak's braces: nothing composited can reach
+  // the screen even if the fallback timer wins the race.
+  void BlankRegion();
+
+  // Compile the card's shaders at startup, on a cloaked one-pixel window, so
+  // the first reminder of a session is not the one paying for them.
+  void WarmUpOnce();
+  void FinishWarmUp();
+
   // Would Windows deliver a notification of its own right now?
   static bool WindowsAcceptsNotifications();
 
@@ -87,6 +97,8 @@ class NotifyWindow : public Win32Window {
   std::function<void()> closed_sink_;
   int heal_phase_ = 0;
   bool cloaked_ = false;
+  // True only while the startup warm-up has the window shown-but-cloaked.
+  bool warming_ = false;
   // True when the compositor accepted the acrylic backdrop. Dart asks, so it
   // can paint a translucent body over real blur instead of a solid one.
   bool acrylic_ = false;

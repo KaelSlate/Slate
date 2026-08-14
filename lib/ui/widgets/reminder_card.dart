@@ -53,6 +53,19 @@ class ShellShape {
 
   static const ShellShape settled = ShellShape();
 
+  /// [collapseT] remapped onto the part of the clock the SHAPE actually owns.
+  ///
+  /// The collapse controller runs 0 → 1 over [AppTheme.notifyCollapseToRing],
+  /// but the geometry finishes early, at [AppTheme.notifyCollapseShapeEnd], and
+  /// the rest of the clock is the wink. Read raw, the shell was still becoming
+  /// a circle in the same instant it was supposed to be fading out of one, and
+  /// the fade got a single frame at 30 Hz to happen in.
+  ///
+  /// Every shape query goes through here, so there is no way to ask for the
+  /// silhouette and get a different answer than the fade did.
+  double get _shapeT =>
+      (collapseT / AppTheme.notifyCollapseShapeEnd).clamp(0.0, 1.0);
+
   Rect rect(Size size) {
     // Grown from the bottom edge: the card unfurls upward and outward from
     // where it landed, rather than inflating from thin air in the middle.
@@ -64,7 +77,7 @@ class ShellShape {
       center: collapseCenter!,
       radius: AppTheme.notifyRingCollapseRadius,
     );
-    return Rect.lerp(open, target, Curves.easeInOutCubic.transform(collapseT))!;
+    return Rect.lerp(open, target, Curves.easeInOutCubic.transform(_shapeT))!;
   }
 
   double radius(Size size) {
@@ -82,7 +95,7 @@ class ShellShape {
     final collapsed = collapseT <= 0
         ? open
         : _lerp(open, r.shortestSide / 2,
-            Curves.easeInOutCubic.transform(collapseT));
+            Curves.easeInOutCubic.transform(_shapeT));
     return collapsed.clamp(1.0, math.min(r.width, r.height) / 2);
   }
 
@@ -110,7 +123,10 @@ class ShellShape {
   /// the ring is the last thing still inside it. Fading the contents out early
   /// erased the target before the journey to it had started.
   double get contentOpacity {
-    final leaving = ((collapseT - 0.75) / 0.25).clamp(0.0, 1.0);
+    // Measured against the SHAPE's own progress, not the raw clock, so the
+    // relationship this comment describes survives the retiming: the contents
+    // let go over the last quarter of the shrink, whatever the shrink lasts.
+    final leaving = ((_shapeT - 0.75) / 0.25).clamp(0.0, 1.0);
     return contentT * (1.0 - leaving);
   }
 
@@ -167,7 +183,20 @@ class ReminderCardShell extends StatefulWidget {
     this.pressed = false,
     this.onHoverChanged,
     this.paintKey,
+    this.overlay,
   });
+
+  /// Drawn ABOVE the shell and deliberately OUTSIDE the morph clip.
+  ///
+  /// For controls that sit on the card's edge rather than inside it — the
+  /// dismiss button straddles the top-left corner the way macOS's does, so half
+  /// of it lives outside the silhouette. Put in [child] it would be cut in two
+  /// by `ClipRSuperellipse`, and the clipped half would refuse hit tests as
+  /// well, which is the worse half of that bargain.
+  ///
+  /// Inside the tilt Transform though, so it leans with the card instead of
+  /// hovering flat above a leaning object.
+  final Widget? overlay;
 
   /// Attached to the box the painters actually paint in. Anything measuring a
   /// position for the shell — the collapse target, for instance — has to
@@ -297,14 +326,34 @@ class _ReminderCardShellState extends State<ReminderCardShell>
       return;
     }
     _chase ??= createTicker(_step);
-    if (!_chase!.isActive) _chase!.start();
+    if (!_chase!.isActive) {
+      // `Ticker.start` restarts `elapsed` at zero, so the previous run's last
+      // stamp would otherwise make the first dt of this run enormous — or
+      // negative — and the light would teleport.
+      _lastTick = Duration.zero;
+      _chase!.start();
+    }
   }
+
+  /// The tick this chase last ran on. The ticker's `elapsed` is monotonic
+  /// within one run and restarts at zero on the next, so the delta is only
+  /// meaningful against a stamp reset by [_chaseOrSnap].
+  Duration _lastTick = Duration.zero;
 
   /// The light eases toward the pointer and then STOPS. A ticker that never
   /// stops would repaint the card sixty times a second while the cursor sits
   /// still — and it would also mean the widget never settles, which is exactly
   /// the sort of thing that makes a test hang instead of failing honestly.
-  void _step(Duration _) {
+  ///
+  /// Eased on WALL-CLOCK time, not per frame. A fixed fraction of the remaining
+  /// distance each tick makes the behaviour a function of the refresh rate, and
+  /// the part that actually bites is not the amplitude but this method's own
+  /// stop condition: at 30 Hz the old constant took twice as long in real time
+  /// to get inside 0.15 px, so the card kept repainting well after the cursor
+  /// had stopped. `1 - exp(-dt/tau)` is the same curve sampled honestly.
+  void _step(Duration elapsed) {
+    final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
+    _lastTick = elapsed;
     final target = _pointer;
     final current = _light.value;
     if (target == null || current == null) {
@@ -316,7 +365,9 @@ class _ReminderCardShellState extends State<ReminderCardShell>
       _chase?.stop();
       return;
     }
-    _light.value = Offset.lerp(current, target, AppTheme.notifyLightEase);
+    if (dt <= 0) return;
+    final a = 1.0 - math.exp(-dt / AppTheme.notifyLightTau);
+    _light.value = Offset.lerp(current, target, a.clamp(0.0, 1.0));
   }
 
   /// Lean away from the pointer, plus the lift, in one matrix.
@@ -367,11 +418,22 @@ class _ReminderCardShellState extends State<ReminderCardShell>
             // and the reason it usually reads as a gimmick.
             transform: _tilt(hover),
             alignment: Alignment.center,
-            // The whole card leans, text included, so nothing shears against
-            // anything else. At two degrees the resampling is invisible; what
-            // is NOT invisible is a shell that tilts while its own contents
-            // stay flat.
-            filterQuality: hover > 0.001 ? FilterQuality.low : null,
+            // NO filterQuality. This one line cost the card its text.
+            //
+            // A non-null filterQuality makes RenderTransform push an
+            // ImageFilterLayer carrying a MATRIX filter: the subtree is
+            // rasterised at its natural size and then the BITMAP is
+            // transformed. Every glyph on the card went through a bilinear
+            // resample for as long as the pointer was on it — and the pointer
+            // is on it exactly when someone is reading it. The old note here
+            // claimed "at two degrees the resampling is invisible"; the
+            // resampling is invisible because without this line there is none.
+            //
+            // Left null, RenderTransform pushes a plain TransformLayer, the
+            // CTM composes, and the glyphs are rasterised at final device
+            // resolution — tilted and sharp. The press scale below is a
+            // different case and keeps its gate: a 2-D scale on live text
+            // really does hop a pixel (manifest, section 7).
             child: AnimatedScale(
               scale: widget.pressed ? AppTheme.notifyPressScale : 1.0,
               duration: AppTheme.notifyPressDuration,
@@ -387,6 +449,10 @@ class _ReminderCardShellState extends State<ReminderCardShell>
                 if (mounted) setState(() => _pressMoving = false);
               },
               child: Stack(
+                // The dismiss button straddles the top-left corner and the dark
+                // rim is drawn half a pixel outside the silhouette. Both are
+                // deliberate overflow; hardEdge was quietly shaving them.
+                clipBehavior: Clip.none,
                 children: [
                   // The shadow is three Gaussian blurs and it does NOT depend on
                   // where the pointer is. Behind its own boundary, so moving the
@@ -427,6 +493,8 @@ class _ReminderCardShellState extends State<ReminderCardShell>
                       child: child,
                     ),
                   ),
+                  // Above the clip, and allowed to overflow the silhouette.
+                  if (widget.overlay != null) widget.overlay!,
                 ],
               ),
             ),
@@ -436,6 +504,251 @@ class _ReminderCardShellState extends State<ReminderCardShell>
       ),
     );
   }
+}
+
+/// The dismiss button: put this away without answering it.
+///
+/// TOP-LEFT, which is macOS's own placement and is also the only corner free
+/// here. The done ring lives on the right, and a second small circle beside it
+/// would read as a pair of buttons rather than as one action and one way out.
+/// The app mark is vertically centred, so it never reaches this corner.
+///
+/// It STRADDLES the corner rather than sitting inside the card — again macOS's
+/// arrangement, and the reason [ReminderCardShell.overlay] exists: inside the
+/// morph clip it would be sliced in half and the sliced half would stop taking
+/// clicks.
+///
+/// Only on hover. A banner that always wears a close button is a dialog, and
+/// this card's whole argument is that it will leave on its own.
+class DismissButton extends StatefulWidget {
+  const DismissButton({
+    super.key,
+    required this.visible,
+    required this.onTap,
+    this.onHoverChanged,
+  });
+
+  final bool visible;
+  final VoidCallback onTap;
+
+  /// Reported UPWARD, because this control lies partly outside the card and the
+  /// card's own MouseRegion is exactly card-sized. Without this, moving onto
+  /// the half of the button that overhangs counted as leaving the card: the
+  /// hover dropped, the button vanished from under the pointer, and the
+  /// dismissal clock started again. The one thing a control must never do is
+  /// disappear as you reach for it.
+  final ValueChanged<bool>? onHoverChanged;
+
+  @override
+  State<DismissButton> createState() => _DismissButtonState();
+}
+
+class _DismissButtonState extends State<DismissButton>
+    with TickerProviderStateMixin {
+  late final AnimationController _in;
+  late final AnimationController _hover;
+  bool _down = false;
+
+  /// Where the press started, so a swipe that happened to begin here is not
+  /// also read as a click on release.
+  Offset? _downAt;
+
+  @override
+  void initState() {
+    super.initState();
+    _in = AnimationController(vsync: this);
+    _hover = AnimationController(
+      vsync: this,
+      duration: AppTheme.notifyDismissRevealHover,
+      reverseDuration: AppTheme.notifyDismissRevealHover,
+    );
+    if (widget.visible) _in.value = 1.0;
+  }
+
+  @override
+  void didUpdateWidget(DismissButton old) {
+    super.didUpdateWidget(old);
+    if (widget.visible == old.visible) return;
+    if (MediaQuery.of(context).disableAnimations) {
+      _in.value = widget.visible ? 1.0 : 0.0;
+      return;
+    }
+    if (widget.visible) {
+      // Springs IN, eases OUT. Arriving is an offer and may be lively; leaving
+      // is the control getting out of the way and must not draw the eye a
+      // second time.
+      _in.animateWith(SpringSimulation(
+        SpringDescription(
+          mass: 1.0,
+          stiffness: AppTheme.notifyDismissStiffness,
+          damping: AppTheme.notifyDismissDamping,
+        ),
+        _in.value,
+        1.0,
+        0.0,
+      ));
+    } else {
+      _in.animateTo(0.0,
+          duration: AppTheme.notifyDismissHide, curve: Curves.easeOutCubic);
+    }
+  }
+
+  @override
+  void dispose() {
+    _in.dispose();
+    _hover.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const d = AppTheme.notifyDismissSize;
+    // Centred ON the corner's curve, not on the corner point: a circle centred
+    // exactly at (0,0) floats diagonally off a 16 px radius and reads as
+    // detached. Here roughly two thirds of it lies on the card.
+    const offset = AppTheme.notifyDismissInset;
+    const pad = AppTheme.notifyDismissTouchPad;
+    return Positioned(
+      left: offset - d / 2 - pad,
+      top: offset - d / 2 - pad,
+      child: AnimatedBuilder(
+        animation: Listenable.merge([_in, _hover]),
+        builder: (context, _) {
+          final t = _in.value.clamp(0.0, 1.3);
+          if (t <= 0.001) return const SizedBox.shrink();
+          final h = Curves.easeOutCubic.transform(_hover.value);
+          final scale = (0.55 + 0.45 * t) *
+              (1.0 + AppTheme.notifyDismissHoverGrow * h) *
+              (_down ? AppTheme.notifyDismissPressScale : 1.0);
+          return Opacity(
+            opacity: t.clamp(0.0, 1.0),
+            child: MouseRegion(
+              // NO cursor change anywhere in this app — the one exception is a
+              // text field's I-beam.
+              onEnter: (_) {
+                _hover.forward();
+                widget.onHoverChanged?.call(true);
+              },
+              onExit: (_) {
+                _hover.reverse();
+                widget.onHoverChanged?.call(false);
+                if (_down) setState(() => _down = false);
+              },
+              child: Listener(
+                // A Listener, not a GestureDetector: the tap recogniser holds
+                // the press for its own deadline, so a quick click showed no
+                // feedback at all. Same reasoning as the done ring.
+                //
+                // The cost of staying out of the gesture arena is that the
+                // card's own horizontal drag also sees these events, so a swipe
+                // STARTED on this button would carry the card away and then
+                // dismiss it on release. Hence the travel check: this fires
+                // only if the pointer stayed put, which is what a click is.
+                onPointerDown: (e) {
+                  _downAt = e.position;
+                  setState(() => _down = true);
+                },
+                onPointerUp: (e) {
+                  final from = _downAt;
+                  setState(() => _down = false);
+                  _downAt = null;
+                  if (from != null &&
+                      (e.position - from).distance <=
+                          AppTheme.notifyDismissSlop) {
+                    widget.onTap();
+                  }
+                },
+                onPointerCancel: (_) {
+                  _downAt = null;
+                  setState(() => _down = false);
+                },
+                child: SizedBox(
+                  // The visual is 18 px; the target is 18 + 2*pad. A control
+                  // this small must not also be hard to hit.
+                  width: d + pad * 2,
+                  height: d + pad * 2,
+                  child: Center(
+                    child: Transform.scale(
+                      scale: scale,
+                      // Scaling a painted glyph, not live text — no filterQuality
+                      // needed, and the shape is redrawn at every size anyway.
+                      child: SizedBox(
+                        width: d,
+                        height: d,
+                        child: CustomPaint(painter: _DismissPainter(hover: h)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DismissPainter extends CustomPainter {
+  const _DismissPainter({required this.hover});
+
+  final double hover;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = size.center(Offset.zero);
+    final r = size.shortestSide / 2;
+
+    // Its own small shadow, so it reads as sitting ABOVE the card rather than
+    // punched into it. Without this the disc looks like a hole.
+    canvas.drawCircle(
+      c + const Offset(0, 1),
+      r,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.45)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, _sigma(4)),
+    );
+
+    // A solid disc, darker than the card, so the glyph has contrast to live in
+    // and the control never depends on what is behind it.
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..color = Color.lerp(
+          AppTheme.background.withValues(alpha: 0.94),
+          AppTheme.background.withValues(alpha: 0.99),
+          hover,
+        )!,
+    );
+    // The same hairline vocabulary as the card's own rim, one step brighter
+    // under the pointer. Hover answers by lighting the EDGE, exactly as the
+    // card does.
+    canvas.drawCircle(
+      c,
+      r - 0.5,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = Colors.white.withValues(
+            alpha: _lerp(AppTheme.notifyRimEvenOpacity, 0.34, hover)),
+    );
+
+    // The cross. Round caps because every other stroke on this card is round —
+    // the tick, the ring — and a mitred X among them looks like a different
+    // typeface.
+    final arm = r * AppTheme.notifyDismissGlyph;
+    final p = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white.withValues(alpha: _lerp(0.72, 0.96, hover));
+    canvas.drawLine(c + Offset(-arm, -arm), c + Offset(arm, arm), p);
+    canvas.drawLine(c + Offset(arm, -arm), c + Offset(-arm, arm), p);
+  }
+
+  @override
+  bool shouldRepaint(_DismissPainter old) => old.hover != hover;
 }
 
 /// The shadow, and NOTHING else.
@@ -478,8 +791,22 @@ class _ShadowPainter extends CustomPainter {
 
     final fade = 1.0 - collapseT;
     if (fade <= 0.001) return;
-    drop(_lerp(0.42, 0.56, hover) * fade, _lerp(38, 54, hover),
-        _lerp(16, 22, hover));
+    // THE WIDE ONE HAS TO DIE INSIDE THE WINDOW.
+    //
+    // This shadow is not clipped by anything Flutter owns — it is clipped by
+    // SetWindowRgn, at `_kPadSide` from the card, and whatever alpha it still
+    // carries there is cut off along a hard line. At blur 54 that is sigma 31.7,
+    // so 40 px out is 1.26 sigma: coverage 0.103, alpha 0.056 — about 14 levels
+    // of black ending in a straight edge. Invisible over a dark desktop, plainly
+    // visible over a bright one.
+    //
+    // 46 gives sigma 27.1, and the padding moved to 52 px = 1.92 sigma:
+    // coverage 0.027, alpha 4/255, under the threshold on any background. The
+    // spread it loses at full hover is bought back by lifting the rest ratio,
+    // so the card still gains presence when you point at it — it just does it
+    // inside a boundary that exists.
+    drop(_lerp(0.42, 0.56, hover) * fade, _lerp(38, 46, hover),
+        _lerp(14, 19, hover));
     drop(0.30 * fade, 16, 6);
     drop(0.22 * fade, 3, 1);
   }
@@ -491,9 +818,9 @@ class _ShadowPainter extends CustomPainter {
       old.collapseT != collapseT;
 }
 
-/// Behind the contents: the body. Nothing else — the light lives on the rim,
-/// and none of it depends on the pointer, so this painter no longer repaints
-/// while the mouse moves.
+/// Behind the contents: the body, and the sheen the fixed overhead source lays
+/// down its upper half. Nothing here depends on where the pointer is, so this
+/// painter does not repaint while the mouse moves.
 class _ShellPainter extends CustomPainter {
   const _ShellPainter({
     required this.shape,
@@ -534,27 +861,56 @@ class _ShellPainter extends CustomPainter {
     )!;
     canvas.drawRSuperellipse(body, Paint()..color = bodyColor);
 
-    // ── NO LIGHT ON THE SURFACE. THIS IS DELIBERATE. ─────────────────────────
+    // ── the sheen: the body finally sees the lamp ────────────────────────────
+    // Forty lines of rim work below assert one overhead source, and the body
+    // was a flat fill that did not know about it. Real surfaces under a
+    // directional light are never one colour, and this is the difference
+    // between graphite that reads as a MATERIAL and graphite that reads as a
+    // filled rectangle with a border.
     //
-    // There used to be a specular pool here that followed the pointer, then a
-    // version that slid against it as the reflection of a fixed lamp. Both were
-    // wrong for this surface, and the second was wrong in a louder way: motion
-    // against the cursor draws MORE attention to the fact that a decoration is
-    // moving.
+    // Kept deliberately below everything else, so the light on this card has a
+    // physical order to it rather than three effects competing: the fixed lamp
+    // on the rim is strongest, the travelling pool is next, and this — the
+    // surface simply being nearer the source at the top — is the quietest of
+    // the three. About seven levels out of 255 at the top edge.
     //
-    // The reference settles it. macOS notification banners do not respond to
-    // where the cursor is — no travelling highlight, no glow, nothing. Hover
-    // reveals an affordance; it does not light the glass. The travelling
-    // specular is a visionOS and tvOS idiom, and those are FOCUS-driven
-    // surfaces on displays you do not touch with a pointer. Transplanted onto a
-    // desktop banner it is the grammar of a landing-page card, which is exactly
-    // what it read as.
+    // Stopped at 0.55 of the height and not at the bottom: a ramp that runs the
+    // whole way is read as a gradient FILL, a decoration. One that dies out in
+    // the upper half is read as light landing, which is the thing it is.
+    if (AppTheme.notifyBodySheen > 0 && collapseT <= 0) {
+      final b = shape.rect(size);
+      canvas.save();
+      canvas.clipRSuperellipse(body);
+      canvas.drawRect(
+        Offset.zero & size,
+        Paint()
+          ..shader = ui.Gradient.linear(
+            Offset(b.center.dx, b.top),
+            Offset(b.center.dx, b.bottom),
+            [
+              Colors.white.withValues(alpha: AppTheme.notifyBodySheen),
+              Colors.white.withValues(alpha: 0.0),
+            ],
+            const [0.0, 0.55],
+          ),
+      );
+      canvas.restore();
+    }
+
+    // NO LIGHT FOLLOWS THE POINTER. Retired for the second and last time,
+    // 2026-08-14, after being restored on request and looked at up close.
     //
-    // What remains is one fixed overhead source, expressed entirely on the rim:
-    // bright top edge, faint bottom caustic, dark outer boundary. The card
-    // still answers the pointer — it leans, it lifts, its shadow spreads — but
-    // the LIGHT never moves, because in the real world the lamp does not follow
-    // your hand. One source, honestly placed, and nothing chasing anything.
+    // There were two: a specular pool travelling across this surface, and a
+    // lens on the rim in _ShellRimPainter that brightened whichever edge the
+    // cursor was nearest. Both are the same idea — a light source riding the
+    // hand — and both read as a web card no matter how defensible the falloff
+    // maths got.
+    //
+    // What is left is ONE fixed overhead source: the sheen above, and on the
+    // rim a bright top edge, a faint bottom caustic and a dark outer boundary.
+    // Hover is answered by the whole rim getting BRIGHTER and by the card
+    // leaning, lifting and spreading its shadow — never by something lighting
+    // up in a new place. The lamp does not follow your hand.
   }
 
   @override
@@ -565,9 +921,9 @@ class _ShellPainter extends CustomPainter {
 }
 
 /// Over the contents: the glass edge, lit by ONE fixed overhead source. A dark
-/// boundary outside, an even hairline, light on the top curve, light leaving
-/// the bottom edge (that is thickness). Nothing here follows the pointer;
-/// `hover` only changes how bright the top is, never where it is.
+/// boundary outside, an even hairline all round, light on the top curve, light
+/// leaving the bottom edge (that is thickness). Nothing here follows the
+/// pointer; `hover` only changes how bright the top is, never where it is.
 class _ShellRimPainter extends CustomPainter {
   const _ShellRimPainter({
     required this.shape,
@@ -680,12 +1036,11 @@ class _ShellRimPainter extends CustomPainter {
         ),
     );
 
-    // The pointer-tracking lens lived here and is gone with the surface pool.
-    // Keeping it would have been the same mistake in a smaller place: a bright
-    // spot travelling along the edge is still a light source riding the cursor,
-    // and the top gradient above already says the lamp is fixed and overhead.
-    // The rim answers hover by getting BRIGHTER, not by lighting somewhere
-    // else — see notifyRimTopHoverOpacity.
+    // The lens that brightened whichever edge the pointer was nearest lived
+    // here, and it is gone with the surface pool — see the note in
+    // _ShellPainter. The top gradient above already says where the lamp is;
+    // a second, movable one contradicted it every time the mouse went below
+    // the card's middle.
     canvas.restore();
   }
 
@@ -791,6 +1146,10 @@ class _RenderMaybeBlur extends RenderProxyBox {
 // ROW
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The app mark's drawn size. Named because the decoder has to be told the same
+/// number the layout uses — see the note in [_ReminderRowState.build].
+const double _kMarkSize = 28.0;
+
 /// One reminder. The app mark lives INSIDE the first row and the others reserve
 /// its width, so the text column stays one straight edge. Hoisting the mark
 /// into its own column looked tidy and broke three things at once: the hover
@@ -873,6 +1232,22 @@ class ReminderRowState extends State<ReminderRow> {
   @override
   Widget build(BuildContext context) {
     final accent = _accent;
+    // THE MARK, DECODED AT THE SIZE IT IS DRAWN.
+    //
+    // The asset is 256 px square and the mark is 28, so every destination
+    // pixel covers about 83 source texels. Left to draw-time filtering that is
+    // a 9.1x minification, and FilterQuality.high is a Mitchell cubic with a
+    // 4x4 window and NO mipmaps: sixteen of those eighty-three get read, the
+    // file's own grain aliases against the sample grid, and the result is the
+    // crunch that reads as "pixelated".
+    //
+    // cacheWidth/cacheHeight move the resize into the DECODER, which averages
+    // over the whole footprint. FilterQuality.medium then handles whatever
+    // fraction is left with a mipmapped linear sample — medium, not high,
+    // because medium is the one that carries mipmaps and high is the one that
+    // does not. Minification wants mip levels far more than it wants a wider
+    // kernel.
+    final markPx = (_kMarkSize * MediaQuery.devicePixelRatioOf(context)).round();
     return AnimatedSize(
       duration: AppTheme.notifyCollapseDuration,
       curve: Curves.easeOutCubic,
@@ -910,9 +1285,11 @@ class ReminderRowState extends State<ReminderRow> {
                             borderRadius: BorderRadius.circular(7),
                             child: Image.asset(
                               'assets/icons/app_mark.png',
-                              width: 28,
-                              height: 28,
-                              filterQuality: FilterQuality.high,
+                              width: _kMarkSize,
+                              height: _kMarkSize,
+                              cacheWidth: markPx,
+                              cacheHeight: markPx,
+                              filterQuality: FilterQuality.medium,
                             ),
                           ),
                         )

@@ -178,6 +178,42 @@ IXAudio2SourceVoice* SfxPlayer::AcquireVoice() {
   return voice;
 }
 
+// Hold a sound until whatever it announces is actually visible. See the note
+// in the header: the reminder chime was leading its own card by about 110 ms.
+void SfxPlayer::ArmDeferred(const std::string& id, float gain) {
+  std::string stale;
+  float stale_gain = 0.0f;
+  {
+    std::lock_guard<std::mutex> guard(deferred_lock_);
+    if (has_deferred_) {
+      // Something armed a sound and its moment never came. Let it out now
+      // rather than silently replacing it — a lost reminder chime is the one
+      // failure this feature cannot afford, and a late one still says "look".
+      stale = deferred_id_;
+      stale_gain = deferred_gain_;
+    }
+    deferred_id_ = id;
+    deferred_gain_ = gain;
+    has_deferred_ = true;
+  }
+  if (!stale.empty()) Play(stale, stale_gain);
+}
+
+void SfxPlayer::FireDeferred() {
+  std::string id;
+  float gain = 0.0f;
+  {
+    std::lock_guard<std::mutex> guard(deferred_lock_);
+    if (!has_deferred_) return;
+    id = deferred_id_;
+    gain = deferred_gain_;
+    has_deferred_ = false;
+  }
+  // OUTSIDE the lock: Play takes `lock_`, and holding two is how a mixer
+  // deadlocks on the platform thread.
+  Play(id, gain);
+}
+
 void SfxPlayer::Play(const std::string& id, float gain) {
   std::lock_guard<std::mutex> guard(lock_);
   if (!ready_ || gain <= 0.0f) return;
@@ -255,7 +291,19 @@ RegisterSfxChannel(flutter::BinaryMessenger* messenger) {
       if (gain_it != args->end()) {
         if (const auto* d = std::get_if<double>(&gain_it->second)) gain = *d;
       }
-      SfxPlayer::Instance().Play(*id, static_cast<float>(gain));
+      // `onReveal` holds the sound until the notification window uncloaks, so
+      // the chime and its card are one event instead of two. Everything else
+      // plays now.
+      bool on_reveal = false;
+      auto rev_it = args->find(flutter::EncodableValue("onReveal"));
+      if (rev_it != args->end()) {
+        if (const auto* b = std::get_if<bool>(&rev_it->second)) on_reveal = *b;
+      }
+      if (on_reveal) {
+        SfxPlayer::Instance().ArmDeferred(*id, static_cast<float>(gain));
+      } else {
+        SfxPlayer::Instance().Play(*id, static_cast<float>(gain));
+      }
       // Reply immediately — Dart never awaits this, and holding the reply
       // would put channel latency in front of the frame that caused it.
       result->Success();

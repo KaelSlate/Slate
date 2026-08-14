@@ -151,11 +151,13 @@ void main() {
     ShellShape shape = ShellShape.settled,
     ShellShape? shadowShape,
     bool acrylic = false,
+    bool dismiss = false,
   }) =>
       ReminderCardShell(
         acrylic: acrylic,
         shape: shape,
         shadowShape: shadowShape,
+        overlay: dismiss ? DismissButton(visible: true, onTap: () {}) : null,
         child: MaterialisingContent(
           t: shape.contentT,
           child: Column(mainAxisSize: MainAxisSize.min, children: rows),
@@ -171,6 +173,28 @@ void main() {
     await tester.pumpWidget(frame(shell([row(title: 'Dinner with Anna')])));
     await settleWithImages(tester);
     await capture(tester, 'notify_plain');
+  });
+
+  // ── the way out ────────────────────────────────────────────────────────────
+  //
+  // It straddles the top-left corner, so these shots are also the check that it
+  // is NOT being sliced by the morph clip or by the Stack — the whole reason
+  // ReminderCardShell grew an `overlay` slot.
+
+  testWidgets('dismiss button offered on hover', (tester) async {
+    await tester.pumpWidget(
+        frame(shell([row(title: 'Dinner with Anna')], dismiss: true)));
+    await settleWithImages(tester);
+    await capture(tester, 'notify_dismiss');
+  });
+
+  testWidgets('dismiss button over a light document', (tester) async {
+    await tester.pumpWidget(frame(
+      shell([row(title: 'Dinner with Anna')], acrylic: true, dismiss: true),
+      on: Ground.page,
+    ));
+    await settleWithImages(tester);
+    await capture(tester, 'notify_dismiss_page');
   });
 
   testWidgets('important card', (tester) async {
@@ -290,7 +314,12 @@ void main() {
     });
   }
 
-  // ── hover: the light follows the pointer ───────────────────────────────────
+  // ── hover ──────────────────────────────────────────────────────────────────
+  //
+  // Nothing here tracks the pointer any more: the card answers hover by leaning
+  // and by lighting its whole rim, never by putting a highlight where the mouse
+  // happens to be. These three used to differ; they should now be identical
+  // except for the lean, and that is the point of keeping all three.
 
   Future<TestGesture> mouseAt(WidgetTester tester, Offset target) async {
     final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
@@ -311,6 +340,14 @@ void main() {
       await capture(tester, 'notify_hover_${spot.key}');
     });
   }
+
+  testWidgets('dismiss button under its own pointer', (tester) async {
+    await tester.pumpWidget(
+        frame(shell([row(title: 'Dinner with Anna')], dismiss: true)));
+    await settleWithImages(tester);
+    await mouseAt(tester, tester.getCenter(find.byType(DismissButton)));
+    await capture(tester, 'notify_dismiss_hover');
+  });
 
   // ── the ring: four states, and NO tick before the click ────────────────────
 

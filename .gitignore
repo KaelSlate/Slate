@@ -92,6 +92,12 @@ dart_devtools_*.json
 # e2e capture output (screenshots, flash frames) - evidence, not source
 /tools/e2e/_*/
 
+# Golden-test failure output. `flutter test` writes four PNGs per failed golden
+# (master, test, isolated diff, masked diff) and rewrites them on every run.
+# Debugging aid with a lifespan of one run - the goldens themselves are source,
+# this is the darkroom floor.
+/test/failures/
+
 # Demo-recording scratch state: the last cursor path and the last take's beat
 # timings. The demo scripts rewrite these on every run - working files, not
 # source, and committing them would make every recording session a diff.

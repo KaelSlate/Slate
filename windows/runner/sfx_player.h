@@ -42,6 +42,21 @@ class SfxPlayer {
   // thread — a stall here would be a stutter in the UI that triggered it.
   void Play(const std::string& id, float gain);
 
+  // HOLD a sound until the thing it belongs to is actually on screen.
+  //
+  // The reminder chime used to play the moment ShowCards returned, which is
+  // before the notify engine has drawn anything: measured, the sound led the
+  // picture by about 110 ms and it read as two separate events. The card's own
+  // uncloak is the honest moment, and only NotifyWindow knows it.
+  //
+  // At most one is held — a second Arm plays the first immediately rather than
+  // dropping it, because a reminder that arrives silently is worse than one
+  // that arrives a beat early.
+  void ArmDeferred(const std::string& id, float gain);
+
+  // Play whatever is held, if anything. Safe to call when nothing is.
+  void FireDeferred();
+
  private:
   SfxPlayer() = default;
   ~SfxPlayer();
@@ -66,6 +81,14 @@ class SfxPlayer {
   bool ready_ = false;
   bool init_attempted_ = false;
   std::mutex lock_;
+
+  // The one sound waiting for its picture. Guarded by `deferred_lock_` rather
+  // than `lock_`: Play() takes `lock_`, and firing from inside it would
+  // deadlock.
+  std::string deferred_id_;
+  float deferred_gain_ = 0.0f;
+  bool has_deferred_ = false;
+  std::mutex deferred_lock_;
 };
 
 // Wire the `slate/sfx` channel onto the main engine. The returned channel must

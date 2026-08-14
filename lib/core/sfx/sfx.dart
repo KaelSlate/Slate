@@ -69,6 +69,16 @@ class Sfx {
     _channel.invokeMethod<void>('play', <String, dynamic>{
       'id': id,
       'gain': gain,
+      // The reminder clip exists to accompany a card and nothing else, so it
+      // waits for that card to be on screen instead of playing the moment the
+      // show is accepted. Measured, it used to lead its own picture by about
+      // 110 ms, which is long enough to be heard as two separate events rather
+      // than one arrival. The runner holds it and fires it on the uncloak —
+      // see SfxPlayer::ArmDeferred.
+      //
+      // `taskDone` is not deferred: nothing is being revealed, the sound IS
+      // the feedback, and it must land on the click.
+      'onReveal': id == _due,
     }).ignore();
   }
 
