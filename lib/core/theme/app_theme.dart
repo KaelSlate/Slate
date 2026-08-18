@@ -368,11 +368,21 @@ class AppTheme {
   /// every card carries is a mark no card has.
   static const double notifyPriorityDot = 5.0;
 
-  /// Body over real acrylic. 0.58 measured 3.8 : 1 for the title over a light
-  /// document — under WCAG AA's 4.5 : 1, on the exact ground the goldens use.
-  /// 0.72 gives 5.6 : 1. This is also the macOS 26 → 27 direction: more opacity
-  /// for legibility, not less.
-  static const double notifyAcrylicBody = 0.72;
+  /// THE CARD IS OPAQUE. One colour, on every machine, over anything.
+  ///
+  /// It used to be a tint: 0.72 over a DWM acrylic backdrop on Windows 11, 0.93
+  /// over nothing on Windows 10. Two materials, neither of them a colour you
+  /// could name, and the card changed character depending on what happened to
+  /// be behind it — over a bright document it lifted, over a dark one it sank.
+  /// A notification is a thing handed to you, not a window onto your desktop.
+  ///
+  /// Lifted a little off [background] rather than equal to it: the same warm
+  /// graphite family, three levels up, so the card reads as a surface resting
+  /// ON the desk rather than a hole cut into it. Everything glossy about it now
+  /// comes from light — the sheen down its top half and the rim — which is how
+  /// a real object gets its shine, and the reason the colour underneath can
+  /// afford to be this quiet.
+  static const Color notifyBody = Color(0xFF1B1611);
 
   /// THE DARK EDGE — the one thing the rim did not have.
   ///
@@ -392,6 +402,12 @@ class AppTheme {
   /// dark edge sits under it. `glassRimEvenOpacity` stays where it is — it
   /// belongs to the pill, which has no dark edge.
   static const double notifyRimEvenOpacity = 0.14;
+
+  /// Back to the pill's width. 1.7 was tried and it was wrong for a reason
+  /// worth keeping written down: a thicker stroke reads as a DRAWN BORDER, and
+  /// a border is a flat thing. The edge has to look like a lit edge, and what
+  /// makes it look lit is where the light is — not how much of it there is.
+  static const double notifyRimWidth = 1.2;
 
   /// Top rim, at rest and at full hover. Raised with the dark edge, never
   /// without it.
@@ -494,6 +510,19 @@ class AppTheme {
   static const double notifyTiltY = 0.052;
   static const Duration notifyHoverDuration = Duration(milliseconds: 160);
 
+  /// WHERE THE LIGHT COMES FROM. Everything lit on this card reads from here.
+  ///
+  /// Up and to the LEFT, the way a lamp sits over a desk — so the top-left of
+  /// the silhouette catches it, the bottom-right falls away, and the two sides
+  /// are the ramp between. That gradient is the entire 3-D illusion: an edge
+  /// lit evenly all the way round is not a lit edge, it is a border, and a
+  /// border is flat. Tried at 0.20/0.66 all round and it read exactly as one.
+  ///
+  /// Expressed as the two ends of a gradient across the card's own box, so the
+  /// rim and the body sheen cannot drift apart about where the lamp is.
+  static const Alignment notifyLightFrom = Alignment.topLeft;
+  static const Alignment notifyLightTo = Alignment.bottomRight;
+
   /// THE SHEEN: the body sees the same lamp the rim has been describing.
   ///
   /// A surface under a directional source is never one flat colour, and the
@@ -508,7 +537,7 @@ class AppTheme {
   /// 255 at the top edge, dying to nothing by 0.55 of the height. A ramp that
   /// ran the whole way would be a gradient fill; one that dies in the upper
   /// half is light landing.
-  static const double notifyBodySheen = 0.030;
+  static const double notifyBodySheen = 0.045;
 
   // NO LIGHT FOLLOWS THE POINTER. Retired 2026-08-14, for the second time and
   // this time for good.

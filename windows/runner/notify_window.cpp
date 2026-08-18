@@ -190,45 +190,20 @@ void NotifyWindow::FinishWarmUp() {
   ::ShowWindow(hwnd, SW_HIDE);
 }
 
-// REAL glass, not a dark rectangle pretending.
+// NO COMPOSITOR BACKDROP. The card paints its own body, opaque, one colour.
 //
-// Flutter cannot blur what is behind this window — BackdropFilter only ever
-// sees Flutter's own tree, so over a browser or a bright wallpaper a
-// "glassmorphic" card is just flat plastic. Windows itself can do it: the same
-// acrylic the shell uses for its own toasts. DWMSBT_TRANSIENTWINDOW is
-// documented for exactly this — "transient, light-dismiss surfaces".
+// This used to ask DWM for the acrylic it gives its own toasts, and Dart then
+// painted a translucent tint over it. Two materials, and the card changed
+// character with whatever happened to be behind it. Worse, the backdrop covers
+// the WHOLE extended frame, so every pixel the window's region exposed beyond
+// the card showed it: that is where the grey slab on first show and the grey
+// brackets during a drag came from, and both needed their own machinery to
+// contain.
 //
-// The frame has to be extended over the whole client area, otherwise the
-// backdrop has nowhere to show through. Where Dart paints a translucent colour,
-// the desktop behind is blurred by the compositor at zero cost to us.
-//
-// Windows 11 22H2 (build 22621) and up. Older builds simply refuse the
-// attribute and keep the solid body — degraded, never broken.
-//
-// ORDER MATTERS, and it did not use to. The frame was extended first and
-// unconditionally, so on Windows 10 — where the attribute does not exist and
-// the call fails — the window was left with its frame stretched over the whole
-// client area and NO backdrop to justify it. DWM fills that extension with its
-// own frame material, which is what the region then exposed everywhere the
-// card's shadow had faded out: the grey the eye reads as a slab on first show
-// and as flickering brackets during a drag.
-//
-// Safe to make conditional: transparency on Windows 10 comes from
-// flutter_acrylic's `Window.setEffect(transparent)`, which goes through
-// SetWindowCompositionAttribute(ACCENT_ENABLE_TRANSPARENTGRADIENT) and never
-// touches DwmExtendFrameIntoClientArea at all (checked against the plugin
-// source, 1.1.4). Nothing here was holding the transparency up.
-void NotifyWindow::EnableAcrylicBackdrop() {
-  HWND hwnd = GetHandle();
-  if (!hwnd) return;
-  int backdrop = DWMSBT_TRANSIENTWINDOW;
-  acrylic_ = SUCCEEDED(::DwmSetWindowAttribute(
-      hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)));
-  if (acrylic_) {
-    MARGINS m = {-1, -1, -1, -1};
-    ::DwmExtendFrameIntoClientArea(hwnd, &m);
-  }
-}
+// An opaque body needs none of it. Nothing is extended, nothing is enabled, and
+// anything the region exposes is simply transparent — on every Windows version,
+// which also means the card looks the same on all of them.
+void NotifyWindow::EnableAcrylicBackdrop() {}
 
 // Inherited wholesale from the pill: a per-pixel transparent window whose
 // client area DefWindowProc erases with the class brush gets that graphite
@@ -375,19 +350,16 @@ bool NotifyWindow::ShowCards(const flutter::EncodableValue& cards) {
   // warm-up first — it has served its purpose the moment a real card exists.
   if (warming_) FinishWarmUp();
 
-  // Tell Dart whether the compositor is blurring behind us, so it paints a
-  // translucent body over real glass instead of an opaque one over nothing.
-  flutter::EncodableValue payload = cards;
-  if (auto* map = std::get_if<flutter::EncodableMap>(&payload)) {
-    (*map)[flutter::EncodableValue("acrylic")] =
-        flutter::EncodableValue(acrylic_);
-  }
+  // `cards` goes to Dart untouched. There used to be a copy here so an
+  // `acrylic` flag could be spliced in, telling Dart whether the compositor was
+  // blurring behind the window. The body is one opaque colour now and does not
+  // care, so the copy and the flag both went.
 
   // Card already up: hand the new payload over and let Dart grow it. No
   // re-show, no second entrance, no second region handshake.
   if (::IsWindowVisible(hwnd)) {
     channel_->InvokeMethod(
-        "show", std::make_unique<flutter::EncodableValue>(payload));
+        "show", std::make_unique<flutter::EncodableValue>(cards));
     // There is no uncloak on this path — the card is already up — so anything
     // waiting for one would wait for the NEXT card. "On reveal" means "now"
     // when the thing is already revealed.
@@ -409,7 +381,7 @@ bool NotifyWindow::ShowCards(const flutter::EncodableValue& cards) {
   SetCloak(true);
   BlankRegion();
   channel_->InvokeMethod("show",
-                         std::make_unique<flutter::EncodableValue>(payload));
+                         std::make_unique<flutter::EncodableValue>(cards));
 
   RECT current{};
   ::GetWindowRect(hwnd, &current);

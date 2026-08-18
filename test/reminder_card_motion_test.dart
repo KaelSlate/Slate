@@ -133,7 +133,6 @@ void main() {
     Widget carded({required VoidCallback onTap, ValueChanged<bool>? hover}) =>
         host(
           ReminderCardShell(
-            acrylic: false,
             onHoverChanged: hover,
             overlay: DismissButton(visible: true, onTap: onTap),
             // A real card's height, and a width that fills the shell: a child
@@ -204,7 +203,6 @@ void main() {
         StatefulBuilder(builder: (context, setState) {
           return host(
             ReminderCardShell(
-              acrylic: false,
               onHoverChanged: (v) => setState(() => hoverCard = v),
               overlay: DismissButton(
                 visible: hoverCard || hoverButton,
@@ -260,7 +258,6 @@ void main() {
           set = setState;
           return host(
             ReminderCardShell(
-              acrylic: false,
               overlay: DismissButton(
                 visible: hoverCard || hoverButton,
                 onTap: () {},

@@ -24,8 +24,11 @@ import 'package:slate/ui/widgets/reminder_card.dart';
 ///
 /// These are not assertions about correctness. They are a way to SEE.
 
-/// What sits behind the card. Only meaningful for the acrylic body, which is
-/// what Windows 11 actually ships.
+/// What sits behind the card.
+///
+/// The body is opaque now, so the ground no longer comes THROUGH it — but it
+/// still decides whether the shadow, the dark outer edge and the lit rim read
+/// at all, and those are most of what these images exist to judge.
 enum Ground { neutral, page, busy }
 
 void main() {
@@ -59,12 +62,11 @@ void main() {
 
   /// What the card is sitting ON.
   ///
-  /// This matters more than it looks. On Windows 10 the body is opaque
-  /// (`glassOpaqueBody`, 93 %) and the ground barely shows. On Windows 11 22H2+
-  /// the compositor blurs the real desktop behind the window and the body drops
-  /// to 58 % — so the ground comes THROUGH the card, and every legibility
-  /// judgement made on the opaque variant is worthless for the machines most
-  /// people are actually running.
+  /// It used to matter twice over, because the body was a tint and the ground
+  /// showed through it. The body is one opaque colour now, so what these test
+  /// is the EDGE: whether the dark boundary still separates the card from a
+  /// white document, and whether the lit rim still reads against a bright,
+  /// busy desktop.
   Widget ground(Ground g, Widget child) {
     switch (g) {
       case Ground.neutral:
@@ -156,11 +158,9 @@ void main() {
     List<Widget> rows, {
     ShellShape shape = ShellShape.settled,
     ShellShape? shadowShape,
-    bool acrylic = false,
     bool dismiss = false,
   }) =>
       ReminderCardShell(
-        acrylic: acrylic,
         shape: shape,
         shadowShape: shadowShape,
         overlay: dismiss ? DismissButton(visible: true, onTap: () {}) : null,
@@ -196,7 +196,7 @@ void main() {
 
   testWidgets('dismiss button over a light document', (tester) async {
     await tester.pumpWidget(frame(
-      shell([row(title: 'Dinner with Anna')], acrylic: true, dismiss: true),
+      shell([row(title: 'Dinner with Anna')], dismiss: true),
       on: Ground.page,
     ));
     await settleWithImages(tester);
@@ -259,7 +259,7 @@ void main() {
   for (final g in Ground.values) {
     testWidgets('acrylic body over ${g.name}', (tester) async {
       await tester.pumpWidget(frame(
-        shell([row(title: 'Dinner with Anna')], acrylic: true),
+        shell([row(title: 'Dinner with Anna')], ),
         on: g,
       ));
       await settleWithImages(tester);
@@ -278,7 +278,7 @@ void main() {
             priority: 2,
             mark: false,
             divider: true),
-      ], acrylic: true),
+      ], ),
       on: Ground.busy,
     ));
     await settleWithImages(tester);
@@ -412,7 +412,6 @@ void main() {
 
       final collapsing = ShellShape(collapseT: t, collapseCenter: centre);
       await tester.pumpWidget(frame(ReminderCardShell(
-        acrylic: false,
         shape: collapsing,
         // The same expression the scene uses, so this photograph cannot flatter
         // the real thing.

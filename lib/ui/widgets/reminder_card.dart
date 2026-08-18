@@ -177,7 +177,6 @@ class ReminderCardShell extends StatefulWidget {
   const ReminderCardShell({
     super.key,
     required this.child,
-    required this.acrylic,
     this.shape = ShellShape.settled,
     this.shadowShape,
     this.pressed = false,
@@ -205,10 +204,6 @@ class ReminderCardShell extends StatefulWidget {
   final GlobalKey? paintKey;
 
   final Widget child;
-
-  /// The compositor is blurring the desktop behind this window, so the body can
-  /// be genuinely translucent — real glass rather than a dark rectangle.
-  final bool acrylic;
 
   final ShellShape shape;
 
@@ -510,7 +505,6 @@ class _ReminderCardShellState extends State<ReminderCardShell>
                     key: widget.paintKey,
                     painter: _ShellPainter(
                       shape: widget.shape,
-                      acrylic: widget.acrylic,
                       collapseT: widget.shape.collapseT,
                     ),
                     foregroundPainter: _ShellRimPainter(
@@ -882,12 +876,10 @@ class _ShadowPainter extends CustomPainter {
 class _ShellPainter extends CustomPainter {
   const _ShellPainter({
     required this.shape,
-    required this.acrylic,
     required this.collapseT,
   });
 
   final ShellShape shape;
-  final bool acrylic;
   final double collapseT;
 
   @override
@@ -895,12 +887,13 @@ class _ShellPainter extends CustomPainter {
     final body = shape.shape(size);
 
     // ── body ─────────────────────────────────────────────────────────────────
-    // Over real acrylic the body is a TINT, not a wall: the desktop stays
-    // visible through it. Without acrylic (Windows 10) it falls back to the
-    // solid body — degraded, never broken.
-    final base = acrylic
-        ? AppTheme.background.withValues(alpha: AppTheme.notifyAcrylicBody)
-        : AppTheme.glassOpaqueBody;
+    // ONE COLOUR. No transparency, no branch, nothing behind it showing
+    // through — see AppTheme.notifyBody. The `acrylic` flag is still carried
+    // for the runner's own bookkeeping but the body no longer consults it: a
+    // card that changes character with the wallpaper is not a card, it is a
+    // window, and it made the same object look cheap over a bright document
+    // and heavy over a dark one.
+    const base = AppTheme.notifyBody;
     // On the answered exit the shell greens as it shrinks, so what winks out is
     // unmistakably the completion and not a card being taken away. The tint is
     // blended INTO the body rather than lerped toward a translucent green:
@@ -942,14 +935,17 @@ class _ShellPainter extends CustomPainter {
       canvas.drawRect(
         Offset.zero & size,
         Paint()
+          // On the SAME diagonal as the rim: one lamp, one direction. A
+          // vertical sheen under a diagonal edge is two light sources, and the
+          // eye catches that even when it cannot name it.
           ..shader = ui.Gradient.linear(
-            Offset(b.center.dx, b.top),
-            Offset(b.center.dx, b.bottom),
+            AppTheme.notifyLightFrom.withinRect(b),
+            AppTheme.notifyLightTo.withinRect(b),
             [
               Colors.white.withValues(alpha: AppTheme.notifyBodySheen),
               Colors.white.withValues(alpha: 0.0),
             ],
-            const [0.0, 0.55],
+            const [0.0, 0.62],
           ),
       );
       canvas.restore();
@@ -973,9 +969,7 @@ class _ShellPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ShellPainter old) =>
-      old.shape != shape ||
-      old.acrylic != acrylic ||
-      old.collapseT != collapseT;
+      old.shape != shape || old.collapseT != collapseT;
 }
 
 /// Over the contents: the glass edge, lit by ONE fixed overhead source. A dark
@@ -995,7 +989,8 @@ class _ShellRimPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final w = AppTheme.glassSpecCoreWidth;
+    // The card's own stroke, wider than the pill's — see notifyRimWidth.
+    final w = AppTheme.notifyRimWidth;
     final r = shape.rect(size);
     final radius = shape.radius(size);
     final inset = RSuperellipse.fromLTRBR(
@@ -1059,22 +1054,37 @@ class _ShellRimPainter extends CustomPainter {
     canvas.save();
     canvas.clipRSuperellipse(inset);
 
-    // Overhead light on the curved top, brighter when the card is lifted.
+    // THE LIT EDGE, and it runs DIAGONALLY — top-left bright, bottom-right
+    // dark, the sides the ramp between them.
+    //
+    // This is the whole 3-D illusion and it is easy to destroy: brighten the
+    // stroke evenly all the way round and it stops being a lit edge and becomes
+    // a BORDER, which is a flat thing drawn on a flat thing. Tried, seen,
+    // reverted. What makes an edge look lit is not how much light it carries
+    // but the fact that one part of it carries more than another, and that the
+    // gradient agrees with where everything else says the lamp is.
+    //
+    // Corner to corner rather than straight down, because a purely vertical
+    // ramp lights the left and right sides identically and a rounded rectangle
+    // then reads as a tube. See AppTheme.notifyLightFrom.
+    final lit = _lerp(AppTheme.notifyRimTopOpacity,
+            AppTheme.notifyRimTopHoverOpacity, hover) *
+        fade;
     canvas.drawRSuperellipse(
       inset,
       stroke()
         ..shader = ui.Gradient.linear(
-          Offset(r.center.dx, r.top),
-          Offset(r.center.dx, r.bottom),
+          AppTheme.notifyLightFrom.withinRect(r),
+          AppTheme.notifyLightTo.withinRect(r),
           [
-            Colors.white.withValues(
-                alpha: (_lerp(AppTheme.notifyRimTopOpacity,
-                            AppTheme.notifyRimTopHoverOpacity, hover) *
-                        fade)
-                    .clamp(0.0, 1.0)),
+            Colors.white.withValues(alpha: lit.clamp(0.0, 1.0)),
+            // Not straight to nothing: the ramp has to be well under way by the
+            // time it reaches the middle of the card, or the whole top half
+            // reads as uniformly bright, which is the border again.
+            Colors.white.withValues(alpha: (lit * 0.22).clamp(0.0, 1.0)),
             Colors.white.withValues(alpha: 0.0),
           ],
-          const [0.0, 0.35],
+          const [0.0, 0.30, 0.62],
         ),
     );
 

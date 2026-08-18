@@ -106,7 +106,6 @@ class _ShaderWarmup extends StatelessWidget {
     Widget shell({required ShellShape shape, double content = 0.5}) => SizedBox(
           width: AppTheme.notifyWidth,
           child: ReminderCardShell(
-            acrylic: true,
             shape: shape,
             child: MaterialisingContent(
               t: content,
@@ -256,9 +255,6 @@ class _NotifySceneState extends State<_NotifyScene>
   List<int>? _lastRegion;
   Offset? _collapseCenter;
 
-  /// True when the compositor is blurring the desktop behind this window, so
-  /// the body can be genuinely translucent instead of a dark rectangle.
-  bool _acrylic = false;
 
   /// Live horizontal offset while the card is being carried. Unbounded and on
   /// the ticker like every other motion here: the hand-rolled Stopwatch loops
@@ -445,7 +441,6 @@ class _NotifySceneState extends State<_NotifyScene>
     setState(() {
       _cards = cards;
       _lifeMs = (args['lifeMs'] as int?) ?? 7000;
-      _acrylic = (args['acrylic'] as bool?) ?? false;
       _striking.removeWhere((id) => !cards.any((c) => c.id == id));
       _ringKeys.removeWhere((id, _) => !cards.any((c) => c.id == id));
     });
@@ -1063,7 +1058,6 @@ class _NotifySceneState extends State<_NotifyScene>
               opacity: ((1.0 - ex * 0.9) * dragFade * collapseFade)
                   .clamp(0.0, 1.0),
               child: ReminderCardShell(
-                acrylic: _acrylic,
                 shape: shape,
                 shadowShape: shadowShape,
                 pressed: _pressed,

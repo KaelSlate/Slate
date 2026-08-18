@@ -85,9 +85,9 @@ class NotifyWindow : public Win32Window {
   // Would Windows deliver a notification of its own right now?
   static bool WindowsAcceptsNotifications();
 
-  // Ask the compositor for the same acrylic the shell gives its own toasts.
-  // Flutter cannot blur foreign windows; DWM can. Win11 22H2+, silently
-  // declined on older builds.
+  // Retired: the card paints its own opaque body, so there is no compositor
+  // backdrop to ask for and no extended frame to justify. Kept as a no-op call
+  // site rather than deleted so the reason survives where the code was.
   void EnableAcrylicBackdrop();
 
   flutter::DartProject project_;
@@ -99,9 +99,6 @@ class NotifyWindow : public Win32Window {
   bool cloaked_ = false;
   // True only while the startup warm-up has the window shown-but-cloaked.
   bool warming_ = false;
-  // True when the compositor accepted the acrylic backdrop. Dart asks, so it
-  // can paint a translucent body over real blur instead of a solid one.
-  bool acrylic_ = false;
 };
 
 #endif  // RUNNER_NOTIFY_WINDOW_H_
