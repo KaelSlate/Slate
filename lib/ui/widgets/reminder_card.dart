@@ -395,11 +395,46 @@ class _ReminderCardShellState extends State<ReminderCardShell>
   @override
   Widget build(BuildContext context) {
     final shadowShape = widget.shadowShape ?? widget.shape;
+    // THE SHELL IS BIGGER THAN THE CARD, and this is the whole reason the
+    // dismiss button can be touched at all.
+    //
+    // Nothing in Flutter takes a click or a mouse-enter outside its own box:
+    // `RenderBox.hitTest` checks `size.contains(position)` before it looks at a
+    // single child, and `clipBehavior: Clip.none` changes only what is PAINTED.
+    // With the shell sized exactly to the card, the half of the button hanging
+    // over the corner was visible and completely inert — reaching for it from
+    // outside dropped the card's hover, which took the button away with it.
+    //
+    // So the shell reserves [AppTheme.notifyDismissReach] on the left, right
+    // and top, and insets the card back inside it. The card does not move: the
+    // reach is symmetric horizontally so centring is unchanged, and there is
+    // none at the bottom, which is the edge the scene pins. Consumers just have
+    // to hand it that much more room — see `_NotifySceneState._positioned`.
+    const reach = AppTheme.notifyDismissReach;
     return MouseRegion(
       onEnter: (e) => _enter(e.localPosition),
       onHover: (e) => _move(e.localPosition),
       onExit: (_) => _exit(),
-      child: AnimatedBuilder(
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(
+                left: reach, right: reach, top: reach),
+            child: _card(shadowShape),
+          ),
+          // Outside the padding, so its own box lies in the ENLARGED space and
+          // every pixel of its target is reachable. Outside the tilt too: a
+          // control should not lean, and on an 18 px disc at three degrees
+          // there was nothing to see anyway.
+          if (widget.overlay != null) widget.overlay!,
+        ],
+      ),
+    );
+  }
+
+  Widget _card(ShellShape shadowShape) {
+    return AnimatedBuilder(
         animation: _merged,
         builder: (context, child) {
           final hover = _hoverCurve.value;
@@ -493,16 +528,13 @@ class _ReminderCardShellState extends State<ReminderCardShell>
                       child: child,
                     ),
                   ),
-                  // Above the clip, and allowed to overflow the silhouette.
-                  if (widget.overlay != null) widget.overlay!,
                 ],
               ),
             ),
           );
         },
         child: widget.child,
-      ),
-    );
+      );
   }
 }
 
@@ -606,11 +638,16 @@ class _DismissButtonState extends State<DismissButton>
     // Centred ON the corner's curve, not on the corner point: a circle centred
     // exactly at (0,0) floats diagonally off a 16 px radius and reads as
     // detached. Here roughly two thirds of it lies on the card.
-    const offset = AppTheme.notifyDismissInset;
-    const pad = AppTheme.notifyDismissTouchPad;
+    const target = AppTheme.notifyDismissTarget;
+    // Coordinates here are the SHELL's, which extends `notifyDismissReach` past
+    // the card on the left and top — that is what makes this button touchable
+    // at all. The disc's centre belongs at `notifyDismissInset` in from the
+    // CARD's corner, so in shell space that is reach + inset, and the target
+    // square is centred on the same point.
+    const centre = AppTheme.notifyDismissReach + AppTheme.notifyDismissInset;
     return Positioned(
-      left: offset - d / 2 - pad,
-      top: offset - d / 2 - pad,
+      left: centre - target / 2,
+      top: centre - target / 2,
       child: AnimatedBuilder(
         animation: Listenable.merge([_in, _hover]),
         builder: (context, _) {
@@ -635,6 +672,16 @@ class _DismissButtonState extends State<DismissButton>
                 if (_down) setState(() => _down = false);
               },
               child: Listener(
+                // OPAQUE, and this is the bug that made the button feel broken.
+                //
+                // A Listener defaults to `deferToChild`, and the only thing
+                // under it is a CustomPaint — whose `hitTest` returns false
+                // unless the painter says otherwise. So the button took pointer
+                // events almost nowhere: photographed, moving onto it made it
+                // vanish, and clicks landed on the card behind it instead.
+                // Opaque means the whole target square answers, which is what a
+                // 30 px control has to do.
+                behavior: HitTestBehavior.opaque,
                 // A Listener, not a GestureDetector: the tap recogniser holds
                 // the press for its own deadline, so a quick click showed no
                 // feedback at all. Same reasoning as the done ring.
@@ -663,21 +710,32 @@ class _DismissButtonState extends State<DismissButton>
                   setState(() => _down = false);
                 },
                 child: SizedBox(
-                  // The visual is 18 px; the target is 18 + 2*pad. A control
-                  // this small must not also be hard to hit.
-                  width: d + pad * 2,
-                  height: d + pad * 2,
-                  child: Center(
-                    child: Transform.scale(
-                      scale: scale,
-                      // Scaling a painted glyph, not live text — no filterQuality
-                      // needed, and the shape is redrawn at every size anyway.
-                      child: SizedBox(
+                  // The square that actually takes clicks, flush with the
+                  // card's corner so every pixel of it is inside the card and
+                  // therefore reachable.
+                  width: target,
+                  height: target,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      // The disc, centred in the target square — so the whole
+                      // of it takes clicks, including the crescent that hangs
+                      // over the card's corner.
+                      Positioned(
+                        left: target / 2 - d / 2,
+                        top: target / 2 - d / 2,
                         width: d,
                         height: d,
-                        child: CustomPaint(painter: _DismissPainter(hover: h)),
+                        child: Transform.scale(
+                          scale: scale,
+                          // Scaling a painted glyph, not live text — no
+                          // filterQuality needed, and the shape is redrawn at
+                          // every size anyway.
+                          child: CustomPaint(
+                              painter: _DismissPainter(hover: h)),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ),
               ),

@@ -578,9 +578,25 @@ class AppTheme {
   /// and reads as detached. At 5 px roughly two thirds of it lies on the card.
   static const double notifyDismissInset = 5.0;
 
-  /// Invisible margin around the disc. The visual is 18 px; the target is 34.
-  /// A control this small must not also be hard to hit.
-  static const double notifyDismissTouchPad = 8.0;
+  /// How far the SHELL extends past the card on the left, right and top, so
+  /// that a control straddling the corner can actually be touched.
+  ///
+  /// Nothing in Flutter takes a click or a mouse-enter outside its own box:
+  /// `RenderBox.hitTest` checks `size.contains` before looking at any child,
+  /// and `clipBehavior: Clip.none` governs only PAINTING. With the shell sized
+  /// exactly to the card, the overhanging half of the dismiss button was drawn
+  /// and inert — worse, approaching it from outside dropped the card's hover,
+  /// which took the button away from under the pointer reaching for it.
+  ///
+  /// 14 px covers the disc's 4 px overhang plus a real margin. Symmetric left
+  /// and right so the card stays centred, absent at the bottom because that is
+  /// the edge the scene pins: the card does not move by a pixel.
+  static const double notifyDismissReach = 14.0;
+
+  /// The clickable square, centred on the disc. It fits entirely inside the
+  /// reach above, so every part of the button — including the half hanging over
+  /// the card's corner — takes clicks.
+  static const double notifyDismissTarget = 30.0;
 
   /// Arm length of the cross, as a fraction of the radius.
   static const double notifyDismissGlyph = 0.38;

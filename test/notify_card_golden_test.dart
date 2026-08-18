@@ -112,7 +112,13 @@ void main() {
                 key: shot,
                 child: Padding(
                   padding: const EdgeInsets.all(58),
-                  child: SizedBox(width: AppTheme.notifyWidth, child: card),
+                  // Same reserve the real scene hands it: the shell extends
+                  // past the card so the dismiss button can be touched.
+                  child: SizedBox(
+                    width: AppTheme.notifyWidth +
+                        AppTheme.notifyDismissReach * 2,
+                    child: card,
+                  ),
                 ),
               ),
             ),

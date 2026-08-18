@@ -308,6 +308,7 @@ class _NotifySceneState extends State<_NotifyScene>
     _life?.cancel();
     _shadowLag?.cancel();
     _entranceFallback?.cancel();
+    _hoverBridge?.cancel();
     _mw.dispose();
     _mh.dispose();
     _shadow.dispose();
@@ -772,8 +773,34 @@ class _NotifySceneState extends State<_NotifyScene>
     _settleHover();
   }
 
+  /// A BRIDGE, not a boolean.
+  ///
+  /// Leaving the card and arriving on the button are two separate events, and
+  /// they do not always land in the same mouse-tracker update. When they do
+  /// not, `_hovering` is false for one frame — long enough for the button to
+  /// unmount, and once it is gone there is nothing left to receive the enter
+  /// that was about to arrive. The button vanished from under the pointer
+  /// reaching for it and never came back; photographed on the live card.
+  ///
+  /// So arriving is instant and leaving waits a beat. If anything claims the
+  /// pointer in that beat, nothing happened at all.
+  Timer? _hoverBridge;
+
   void _settleHover() {
     final over = _hoverCard || _hoverDismiss;
+    _hoverBridge?.cancel();
+    if (!over && _hovering) {
+      _hoverBridge = Timer(Duration.zero, () {
+        if (!mounted) return;
+        if (_hoverCard || _hoverDismiss) return; // something caught it
+        _applyHover(false);
+      });
+      return;
+    }
+    _applyHover(over);
+  }
+
+  void _applyHover(bool over) {
     if (_hovering == over) return;
     // setState, because the dismiss button is offered on exactly this bit and
     // it lives inside a builder that would otherwise only run when an
@@ -934,7 +961,11 @@ class _NotifySceneState extends State<_NotifyScene>
     // region is measured from the resting layout, not from a frame mid-morph.
     final card = SizedBox(
       key: _cardKey,
-      width: AppTheme.notifyWidth,
+      // The shell is WIDER than the card by `notifyDismissReach` on each side —
+      // that reserve is what lets the dismiss button, which straddles the top
+      // -left corner, take a click at all. Hand it the room or the card itself
+      // gets squeezed by 28 px.
+      width: AppTheme.notifyWidth + AppTheme.notifyDismissReach * 2,
       child: _travelling(),
     );
     return Positioned(
