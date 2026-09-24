@@ -90,6 +90,7 @@ dart_devtools_*.json
 # Claude / AI instructions and local settings
 .claude/
 CLAUDE.md
+AGENT_RULES.md
 Here_is_exactly_what_gemeini_wrote
 the_key_points_for_you
 OurMarketingStrategy.md
