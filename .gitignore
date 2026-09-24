@@ -89,6 +89,8 @@ dart_devtools_*.json
 /test_encoding.dart
 # Claude / AI instructions and local settings
 .claude/
+CLAUDE.md
+Here_is_exactly_what_gemeini_wrote
 the_key_points_for_you
 OurMarketingStrategy.md
 prompts/
