@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(Copy-Item \"native\\\\target\\\\release\\\\slate_core.dll\" \"slate_core.dll\" -Force; Write-Output \\(\"Copied. Size={0} bytes; Modified={1}\" -f \\(Get-Item slate_core.dll\\).Length, \\(Get-Item slate_core.dll\\).LastWriteTime\\); $s = Select-String -Path \"native\\\\target\\\\release\\\\slate_core.dll\" -Pattern \"ffi_update_task_ex\" -SimpleMatch -ErrorAction SilentlyContinue; if \\($s\\) { Write-Output \"Symbol ffi_update_task_ex: FOUND in DLL\" } else { Write-Output \"Symbol ffi_update_task_ex: not found via text scan\" })"
-    ]
-  }
-}

@@ -46,19 +46,20 @@ try { Invoke-Native "cargo build" { cargo build --release } } finally { Pop-Loca
 Copy-Item "$root\native\target\release\slate_core.dll" "$root\slate_core.dll" -Force
 Write-Host "  slate_core.dll -> project root" -ForegroundColor Green
 
-# -- 2. Flutter release, obfuscated (public-build law from DEPLOYS.md) --------
-Step "2/5  flutter build windows --release --obfuscate"
-$symbols = "$root\symbols\v$version"
-New-Item -ItemType Directory -Path $symbols -Force | Out-Null
+# -- 2. Flutter release (NO obfuscation - avoids false-positive AV flags) -----
+# Obfuscation was removed in v1.1.8 because --obfuscate triggers heuristic
+# detections (Wacatac.B!ml, ObfuscatedPoly) on VirusTotal.  For a desktop app
+# distributed directly, Dart AOT already compiles to native x64 - obfuscation
+# adds negligible reverse-engineering protection but costs 4+ AV false positives.
+Step "2/5  flutter build windows --release"
 Push-Location $root
 try {
   Invoke-Native "flutter build" {
-    & flutter build windows --release --obfuscate --split-debug-info="symbols\v$version"
+    & flutter build windows --release
   }
 } finally { Pop-Location }
 $release = "$root\build\windows\x64\runner\Release"
 if (-not (Test-Path "$release\slate.exe")) { throw "release build missing: $release\slate.exe" }
-Write-Host "  keep symbols\v$version (tester crash logs need it)" -ForegroundColor Green
 
 # -- 3. Stage app-local VC++ runtime next to slate.exe -----------------------
 Step "3/5  Stage VC++ runtime (app-local)"

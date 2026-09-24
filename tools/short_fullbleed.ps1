@@ -19,7 +19,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\short_fullbleed.ps1 -Peek
 
 param(
-  [string]$Source = 'C:\Users\levpo\Desktop\2026-08-03 17-31-29.mp4',
+  [string]$Source = "$env:USERPROFILE\Desktop\2026-08-03 17-31-29.mp4",
   [string]$Out    = '',
 
   # The performance, in seconds into the source file. Cut on the first frame of
@@ -82,9 +82,9 @@ if ($Plate) {
   $In    = $In - $Handle
   $Dur   = $Dur + 2 * $Handle
   if ($Inset -le 0) { $Inset = 32 }
-  if (-not $Out) { $Out = 'C:\Users\levpo\Desktop\slate_short_02_clean.mp4' }
+  if (-not $Out) { $Out = "$env:USERPROFILE\Desktop\slate_short_02_clean.mp4" }
 }
-if (-not $Out) { $Out = 'C:\Users\levpo\Desktop\slate_short_02_moveday.mp4' }
+if (-not $Out) { $Out = "$env:USERPROFILE\Desktop\slate_short_02_moveday.mp4" }
 
 $hasText = [bool]($Line1 -or $Line2)
 

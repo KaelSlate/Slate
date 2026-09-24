@@ -124,7 +124,7 @@ enum DateToken {
 C-ABI: в `CParseResult` после `tag_count` добавить `pub date_kind: u8, pub date_a: i64, pub date_b: i64, pub date_c: i64`; заполнять в `ffi_parse_input` (None → kind 0, все -1); в null-ветке тоже. `ffi_free_parse_result` не меняется (нет новых аллокаций).
 
 - [ ] **Step 4:** `cargo test` → все PASS (старые тоже: `test_dot_time` остаётся временем).
-- [ ] **Step 5:** `cargo build --release`; copy `native/target/release/slate_core.dll` → `c:\Users\levpo\Desktop\Aura\slate_core.dll`.
+- [ ] **Step 5:** `cargo build --release`; copy `native/target/release/slate_core.dll` → `slate_core.dll`.
 
 ---
 

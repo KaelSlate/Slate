@@ -87,7 +87,23 @@ dart_devtools_*.json
 # Loose scratch Dart snippets (not part of the app or the test suite).
 /test_create.dart
 /test_encoding.dart
-.claude/settings.json
+# Claude / AI instructions and local settings
+.claude/
+the_key_points_for_you
+OurMarketingStrategy.md
+prompts/
+
+# Internal research and testing logs
+docs/user_findings.md
+docs/gtm_strategy_*.md
+docs/distribution_kit_*.md
+docs/ua_channels_*.md
+docs/competitive_analysis_*.md
+docs/voc_naming_icp_*.md
+
+# Local test scratch scripts
+test/*.py
+test/scratch_*.dart
 
 # e2e capture output (screenshots, flash frames) - evidence, not source
 /tools/e2e/_*/
