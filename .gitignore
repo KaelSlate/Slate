@@ -96,13 +96,22 @@ the_key_points_for_you
 OurMarketingStrategy.md
 prompts/
 
-# Internal research and testing logs
+# Internal research, ops logs, and working notes — not the public archive
+DEPLOYS.md
 docs/user_findings.md
 docs/gtm_strategy_*.md
 docs/distribution_kit_*.md
 docs/ua_channels_*.md
 docs/competitive_analysis_*.md
 docs/voc_naming_icp_*.md
+docs/media_playbook.md
+docs/phone_sync_architecture.md
+docs/retention_loop.md
+docs/slate_vision.md
+docs/superpowers/
+
+# Gradle/AGP problem reports — generated, not source
+/android/build/
 
 # Local test scratch scripts
 test/*.py
